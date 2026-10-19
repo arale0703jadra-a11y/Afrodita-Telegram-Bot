@@ -14,9 +14,23 @@ import {
   initialAfroditaState,
 } from "../src/types.js";
 import { AfroditaStore } from "../src/store.js";
-import { catalogReply, isSafeGeneratedReply, pollContent } from "../src/messages.js";
+import {
+  catalogReply,
+  findRequestedVerifiedModel,
+  isCommercialInquiry,
+  isExplicitMediaRequest,
+  isSafeGeneratedReply,
+  pollContent,
+  verifiedModelsPollContent,
+  verifiedModelsReply,
+} from "../src/messages.js";
 import { generateReply } from "../src/generator.js";
 import { loadAfroditaConfig } from "../src/config.js";
+import {
+  clearVerifiedModelsCache,
+  getActiveVerifiedModels,
+  type VerifiedModel,
+} from "../src/verified-users.js";
 
 const now = Date.UTC(2026, 9, 14, 15, 0);
 const testBotToken = `12345678:${"x".repeat(35)}`;
@@ -239,6 +253,15 @@ test("directed messages get priority while unsolicited participation stays rare"
     decideAction(state, { directedToBot: false, randomValue: 0.01, now }).action,
     "participate",
   );
+  assert.deepEqual(
+    decideAction(state, {
+      directedToBot: false,
+      commercialInquiry: true,
+      randomValue: 0.9,
+      now,
+    }),
+    { action: "reply", topic: "comida" },
+  );
 });
 
 test("polls and profiles require engagement and an authorized profile", () => {
@@ -315,6 +338,106 @@ test("catalog replies vary and generated content rejects links, mentions, and se
   assert.equal(isSafeGeneratedReply("Hola @usuario"), false);
   assert.equal(isSafeGeneratedReply("Sé que estás deprimida"), false);
   assert.equal(isSafeGeneratedReply("a".repeat(351)), false);
+});
+
+test("commercial request recognition is topic-focused and requires explicit media wording for images", () => {
+  assert.equal(isCommercialInquiry("¿Tienen catálogo de servicios?"), true);
+  assert.equal(isCommercialInquiry("¿Hay llamadas disponibles?"), true);
+  assert.equal(isCommercialInquiry("Hola, ¿cómo estás?"), false);
+  assert.equal(isExplicitMediaRequest("¿Me enseñas fotos?"), true);
+  assert.equal(isExplicitMediaRequest("¿Tienen llamadas?"), false);
+  const models: VerifiedModel[] = [
+    { groupId: -100, userId: 1, displayName: "Ana María", media: [] },
+    { groupId: -100, userId: 2, displayName: "Luz", username: "luz_model", media: [] },
+  ];
+  assert.equal(findRequestedVerifiedModel("¿Tienes fotos de Ana Maria?", models)?.userId, 1);
+  assert.equal(findRequestedVerifiedModel("¿Fotos de @luz_model?", models)?.userId, 2);
+});
+
+test("verified model polls use active model names and fit Telegram poll bounds", () => {
+  const models: VerifiedModel[] = [
+    {
+      groupId: -100,
+      userId: 1,
+      displayName: "Ana",
+      media: [],
+    },
+    {
+      groupId: -100,
+      userId: 2,
+      displayName: "Luz",
+      media: [],
+    },
+  ];
+  const poll = verifiedModelsPollContent("servicios", models);
+  assert.match(poll.question, /modelos verificadas/);
+  assert.deepEqual(poll.options, [
+    "Conocer a Ana",
+    "Conocer a Luz",
+    "Otra recomendación",
+  ]);
+  assert.equal(poll.options.length, poll.topics.length);
+  assert.ok(poll.options.length >= 2 && poll.options.length <= 10);
+  assert.match(verifiedModelsReply(models), /Ana, Luz/);
+});
+
+test("Supabase verified model query only returns active records for the requested group and caches safely", async () => {
+  clearVerifiedModelsCache();
+  let calls = 0;
+  let requestUrl: URL | undefined;
+  let authorization = "";
+  const fetcher: typeof fetch = async (input, init) => {
+    calls += 1;
+    requestUrl = new URL(input instanceof Request ? input.url : String(input));
+    authorization = new Headers(init?.headers).get("authorization") ?? "";
+    return new Response(JSON.stringify([
+      {
+        group_id: -100,
+        user_id: 123,
+        verified: true,
+        revoked_at: null,
+        username: "ana",
+        display_name: "Ana",
+        photo_file_id: "telegram-file-id",
+        media: [{ type: "video", file_id: "video-file-id" }],
+      },
+      {
+        group_id: -200,
+        user_id: 456,
+        verified: true,
+        revoked_at: null,
+        display_name: "Otro grupo",
+      },
+      {
+        group_id: -100,
+        user_id: 789,
+        verified: false,
+        revoked_at: null,
+        display_name: "Revocada",
+      },
+    ]), { status: 200 });
+  };
+  const config = {
+    supabaseUrl: "https://example.supabase.co",
+    supabaseKey: "read-only-test-key",
+  };
+
+  const first = await getActiveVerifiedModels(-100, config, fetcher, 100);
+  first[0]!.media.push({ fileId: "mutated", type: "photo" });
+  const second = await getActiveVerifiedModels(-100, config, fetcher, 101);
+
+  assert.equal(calls, 1);
+  assert.equal(authorization, "Bearer read-only-test-key");
+  assert.equal(requestUrl?.searchParams.get("group_id"), "eq.-100");
+  assert.equal(requestUrl?.searchParams.get("verified"), "eq.true");
+  assert.equal(requestUrl?.searchParams.get("revoked_at"), "is.null");
+  assert.equal(second.length, 1);
+  assert.equal(second[0]?.displayName, "Ana");
+  assert.deepEqual(second[0]?.media, [
+    { fileId: "telegram-file-id", type: "photo" },
+    { fileId: "video-file-id", type: "video" },
+  ]);
+  clearVerifiedModelsCache();
 });
 
 test("AI generation is opt-in, only receives the directed message, and safely falls back", async () => {
@@ -435,6 +558,29 @@ test("configuration rejects incomplete AI credentials and unsafe public endpoint
     /debe usar HTTPS/,
   );
   assert.equal(loadAfroditaConfig({ AFRODITA_BOT_TOKEN: testBotToken }).aiEndpoint, undefined);
+  assert.throws(
+    () => loadAfroditaConfig({
+      AFRODITA_BOT_TOKEN: testBotToken,
+      AFRODITA_SUPABASE_URL: "https://example.supabase.co",
+    }),
+    /requiere AFRODITA_SUPABASE_URL y AFRODITA_SUPABASE_KEY/,
+  );
+  assert.throws(
+    () => loadAfroditaConfig({
+      AFRODITA_BOT_TOKEN: testBotToken,
+      AFRODITA_SUPABASE_URL: "http://remote.example",
+      AFRODITA_SUPABASE_KEY: "key",
+    }),
+    /debe usar HTTPS/,
+  );
+  assert.equal(
+    loadAfroditaConfig({
+      AFRODITA_BOT_TOKEN: testBotToken,
+      AFRODITA_SUPABASE_URL: "https://example.supabase.co/",
+      AFRODITA_SUPABASE_KEY: "read-only-key",
+    }).supabaseUrl,
+    "https://example.supabase.co",
+  );
   assert.throws(
     () => loadAfroditaConfig({ AFRODITA_BOT_TOKEN: "malformed" }),
     /formato válido/,

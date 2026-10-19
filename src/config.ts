@@ -4,6 +4,8 @@ export interface AfroditaConfig {
   aiEndpoint?: string;
   aiApiKey?: string;
   aiModel?: string;
+  supabaseUrl?: string;
+  supabaseKey?: string;
 }
 
 export class AfroditaConfigError extends Error {
@@ -28,6 +30,8 @@ export function loadAfroditaConfig(
   const aiEndpoint = env.AFRODITA_AI_CHAT_COMPLETIONS_URL?.trim();
   const aiApiKey = env.AFRODITA_AI_API_KEY?.trim();
   const aiModel = env.AFRODITA_AI_MODEL?.trim();
+  const supabaseUrl = env.AFRODITA_SUPABASE_URL?.trim();
+  const supabaseKey = env.AFRODITA_SUPABASE_KEY?.trim();
   if ([aiEndpoint, aiApiKey, aiModel].some(Boolean) && ![aiEndpoint, aiApiKey, aiModel].every(Boolean)) {
     throw new AfroditaConfigError(
       "La IA opcional requiere AFRODITA_AI_CHAT_COMPLETIONS_URL, AFRODITA_AI_API_KEY y AFRODITA_AI_MODEL.",
@@ -47,11 +51,38 @@ export function loadAfroditaConfig(
       throw new AfroditaConfigError("El endpoint de IA debe usar HTTPS (excepto localhost).");
     }
   }
+  if (Boolean(supabaseUrl) !== Boolean(supabaseKey)) {
+    throw new AfroditaConfigError(
+      "La conexión Supabase requiere AFRODITA_SUPABASE_URL y AFRODITA_SUPABASE_KEY.",
+    );
+  }
+  if (supabaseUrl) {
+    let parsed: URL;
+    try {
+      parsed = new URL(supabaseUrl);
+    } catch {
+      throw new AfroditaConfigError("AFRODITA_SUPABASE_URL debe ser una URL válida.");
+    }
+    const localHttp =
+      parsed.protocol === "http:" &&
+      ["localhost", "127.0.0.1", "[::1]"].includes(parsed.hostname);
+    if (
+      (parsed.protocol !== "https:" && !localHttp) ||
+      parsed.username ||
+      parsed.password
+    ) {
+      throw new AfroditaConfigError(
+        "AFRODITA_SUPABASE_URL debe usar HTTPS (excepto localhost).",
+      );
+    }
+  }
   return {
     botToken,
     ...(dataDirectory ? { dataDirectory } : {}),
     ...(aiEndpoint ? { aiEndpoint } : {}),
     ...(aiApiKey ? { aiApiKey } : {}),
     ...(aiModel ? { aiModel } : {}),
+    ...(supabaseUrl ? { supabaseUrl: supabaseUrl.replace(/\/+$/u, "") } : {}),
+    ...(supabaseKey ? { supabaseKey } : {}),
   };
 }

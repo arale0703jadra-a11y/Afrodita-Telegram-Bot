@@ -8,6 +8,7 @@ import type {
 
 export interface DecisionContext {
   directedToBot: boolean;
+  commercialInquiry?: boolean;
   randomValue: number;
   now: number;
   limits?: Partial<AfroditaLimits>;
@@ -41,7 +42,7 @@ export function decideAction(
     return { action: "silence", reason: "quiet_period" };
   }
 
-  if (context.directedToBot) {
+  if (context.directedToBot || context.commercialInquiry) {
     if (!canPublish(state, "reply", context.now, limits)) {
       return { action: "silence", reason: "rate_limit" };
     }

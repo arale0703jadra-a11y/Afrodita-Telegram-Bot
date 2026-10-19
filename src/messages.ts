@@ -1,4 +1,5 @@
 import type { AfroditaTopic } from "./types.js";
+import type { VerifiedModel } from "./verified-users.js";
 
 const RESPONSES: Record<AfroditaTopic, string[]> = {
   productos: [
@@ -76,6 +77,86 @@ export function pollContent(topic: AfroditaTopic): {
     options: ordered.map((candidate) => labels[candidate as keyof typeof labels]),
     topics: ordered,
   };
+}
+
+export function verifiedModelsPollContent(
+  topic: AfroditaTopic,
+  models: readonly VerifiedModel[],
+): { question: string; options: string[]; topics: AfroditaTopic[] } {
+  if (models.length === 0) return pollContent(topic);
+  const uniqueModels = models.filter(
+    (model, index, all) =>
+      all.findIndex((candidate) => candidate.userId === model.userId) === index,
+  );
+  const options = uniqueModels.slice(0, 9).map((model) =>
+    `Conocer a ${plainProfileName(model.displayName)}`.slice(0, 100),
+  );
+  options.push("Otra recomendación");
+  return {
+    question: "¿Qué te gustaría descubrir de las modelos verificadas del grupo?",
+    options,
+    topics: options.map((_, index) =>
+      index < options.length - 1 ? "servicios" : "general",
+    ),
+  };
+}
+
+export function isCommercialInquiry(text: string): boolean {
+  const normalized = normalizeForMatching(text);
+  const hasOfferKeyword =
+    /\b(?:catalogo|catalogos|fotos?|imagenes?|llamadas?|videollamadas?|servicios?|modelos?|contenido|precios?|reservas?|packs?)\b/u.test(normalized);
+  const hasInquiryIntent =
+    /\b(?:quiero|busco|tienen|hay|disponible|ver|muestr|compart|mand|recomi|alguien|donde|quien|puedo|me|need|want|looking|available)\w*\b/u.test(normalized);
+  return hasOfferKeyword && (hasInquiryIntent || normalized.trim().split(/\s+/u).length <= 3);
+}
+
+export function isExplicitMediaRequest(text: string): boolean {
+  return /(?:\b(?:foto|fotos|imagen|imagenes|media|video|videos|catalogo|catalogos)\b)/iu.test(
+    normalizeForMatching(text),
+  );
+}
+
+export function verifiedModelsReply(models: readonly VerifiedModel[]): string {
+  const names = models
+    .slice(0, 3)
+    .map((model) => plainProfileName(model.displayName))
+    .filter(Boolean);
+  if (names.length === 0) {
+    return "Ahora mismo no encuentro perfiles verificados activos para recomendar. Si quieres, dime si buscas un catálogo, una llamada o información de servicios y lo vuelvo a comprobar. 💫";
+  }
+  const list = names.join(", ");
+  const remaining = models.length > names.length
+    ? ` y ${models.length - names.length} más`
+    : "";
+  return `¡Claro! 💫 Entre las modelos verificadas activas del grupo están ${list}${remaining}. ¿Quieres conocer el catálogo o consultar por una llamada?`;
+}
+
+export function findRequestedVerifiedModel(
+  text: string,
+  models: readonly VerifiedModel[],
+): VerifiedModel | undefined {
+  const normalizedText = normalizeForMatching(text);
+  return models.find((model) => {
+    const name = normalizeForMatching(model.displayName);
+    const username = model.username
+      ? normalizeForMatching(model.username.replace(/^@/u, ""))
+      : "";
+    return (
+      (name.length >= 2 && normalizedText.includes(name)) ||
+      (username.length >= 4 && normalizedText.includes(username))
+    );
+  });
+}
+
+function normalizeForMatching(value: string): string {
+  return value
+    .toLocaleLowerCase("es")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/gu, "");
+}
+
+function plainProfileName(value: string): string {
+  return value.replace(/[\r\n\0]/gu, " ").replace(/\s+/gu, " ").trim().slice(0, 60);
 }
 
 export function isSafeGeneratedReply(value: string): boolean {

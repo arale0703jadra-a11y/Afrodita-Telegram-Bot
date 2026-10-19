@@ -20,11 +20,13 @@ logs.
 
 ## Conducta y límites
 
-- Responde únicamente cuando la mencionan o contestan a uno de sus mensajes; la participación no solicitada es ocasional.
+- Responde cuando la mencionan, contestan a uno de sus mensajes o hacen una consulta directa sobre catálogo, fotos, servicios o llamadas. La participación no solicitada fuera de esas consultas es ocasional.
 - El motor usa métricas agregadas de temas comerciales, hora UTC, respuestas a Afrodita y votos anónimos por opción. No persiste textos de conversaciones ni identificadores de votantes.
 - Los comentarios que piden explícitamente menos menciones o mensajes activan una pausa temporal de 12 horas. No intenta inferir estados emocionales.
 - Límites iniciales por grupo: cuatro publicaciones diarias, al menos 15 minutos entre publicaciones, una encuesta por 24 horas y una presentación de perfil por 24 horas.
 - Las encuestas son anónimas de Telegram; se reciben actualizaciones de conteo agregado.
+- Las encuestas pueden incluir nombres de modelos verificadas activas del grupo cuando Supabase está configurado; se limitan a una por 24 horas, con un máximo de cuatro publicaciones diarias y 15 minutos entre publicaciones.
+- Ante consultas explícitas sobre catálogos, fotos, llamadas o servicios, AFRODITA puede responder con perfiles verificados activos del grupo. Solo envía un archivo multimedia asociado a la fila cuando la persona lo solicita explícitamente.
 - Un perfil solo se presenta si una persona administradora lo autoriza respondiendo al mensaje de una persona que figure como verificada en el registro local de ZEUS. Antes de autorizar y presentar se vuelve a verificar la marca local; al publicarlo también se comprueba la membresía actual en Telegram. Usa `/afrodita_ocultar` en respuesta al mensaje para retirarlo.
 - Si el grupo prefiere que el bot no lea mensajes normales, no habilites la recepción amplia de mensajes en BotFather. En ese caso, Telegram puede limitar las interacciones disponibles.
 
@@ -37,6 +39,12 @@ La salida se limita en longitud y se descartan respuestas con enlaces, menciones
 Los datos agregados y la autorización explícita de perfiles se guardan separadamente de ZEUS en `data/afrodita/<chatId>.json` por defecto; `AFRODITA_DATA_DIR` permite elegir otro directorio. Se usa un archivo temporal de permisos restrictivos y reemplazo atómico. Las actualizaciones del mismo grupo se serializan dentro del proceso. Si el JSON está dañado, se conserva el archivo original, se crea una copia `.corrupt-*.bak` y se detienen las escrituras de ese estado hasta que se repare manualmente; no se reemplaza silenciosamente por valores iniciales.
 
 La autorización de un perfil conserva su ID y nombre público para revalidar la verificación y la membresía. Para presentar perfiles, el archivo local de ZEUS `data/storage/<chatId>.json` debe estar disponible en el mismo sistema de archivos. Por defecto, AFRODITA busca en `../ZEUS/data/storage` relativo a su módulo; puede configurarse otra ruta con `AFRODITA_ZEUS_STORAGE_DIR`. Si el archivo falta, está dañado o no puede leerse, la autorización/presentación falla de forma segura; una indisponibilidad temporal no elimina por sí sola una autorización ya guardada.
+
+## Modelos verificadas en Supabase
+
+Para consultar el registro compartido de ZEUS, configura `AFRODITA_SUPABASE_URL` y `AFRODITA_SUPABASE_KEY`. La clave debe ser de solo lectura y tener una política RLS que permita únicamente leer los registros activos requeridos; no reutilices una clave `service_role` de privilegios amplios. La lectura filtra por `group_id`, `verified=true` y `revoked_at IS NULL`, se limita a 500 perfiles por grupo y se almacena en caché durante cinco minutos. Sin estas dos variables la función se desactiva y se registra un aviso al iniciar.
+
+El esquema actual de `verified_users` aporta ID, nombre público y username, pero no define columnas multimedia. Si se amplía de forma controlada, AFRODITA reconoce `photo_file_id`, `profile_photo_file_id`, `photo_file_ids`, `video_file_id`, `video_file_ids`, `document_file_id`, `document_file_ids`, `media_file_id`, `media_file_ids`, `telegram_file_id`, o `media` como arreglo de objetos `{ "type": "photo|video|document", "file_id": "..." }`. No crea ni inventa archivos; los `file_id` deben ser utilizables por el bot AFRODITA y compartidos con autorización para su publicación. Las imágenes/videos se envían solo como respuesta a una petición explícita de fotos, imágenes, catálogo o multimedia. No se realiza ninguna migración automática.
 
 ## Railway
 
@@ -57,6 +65,10 @@ variables `AFRODITA_AI_CHAT_COMPLETIONS_URL`, `AFRODITA_AI_API_KEY` y
 `AFRODITA_AI_MODEL` solo si se habilita expresamente la IA externa. Para
 persistencia, crea un volumen y móntalo en una ruta persistente, por ejemplo
 `/data/afrodita`, y define `AFRODITA_DATA_DIR=/data/afrodita`.
+
+Para habilitar la lectura de verificadas, define `AFRODITA_SUPABASE_URL` y
+`AFRODITA_SUPABASE_KEY` como variables del servicio usando una clave de solo
+lectura protegida por RLS.
 
 Railway ejecutará AFRODITA como servicio independiente, por lo que no tendrá
 acceso al disco de ZEUS. En esa configuración los perfiles verificados no

@@ -157,6 +157,7 @@ export function initialAfroditaState(): AfroditaState {
   ) as Record<AfroditaTopic, number>;
   return {
     enabled: false,
+    activityPaused: false,
     messageCount: 0,
     messagesSincePoll: 0,
     topicCounts: { ...topicCounts },
@@ -164,6 +165,8 @@ export function initialAfroditaState(): AfroditaState {
     activityByHour: Array.from({ length: 24 }, () => 0),
     pollVotes: { ...topicCounts },
     pollTallies: {},
+    pollCount: 0,
+    lastPollTopic: "",
     usefulReplies: 0,
     explicitQuietRequests: 0,
     quietUntil: 0,
@@ -172,6 +175,19 @@ export function initialAfroditaState(): AfroditaState {
     utcDay: "",
     lastPollAt: 0,
     lastProfileAt: 0,
+    lastActivityAt: 0,
+    lastNewsAt: 0,
+    lastNewsSellerId: "",
+    lastScheduledKey: "",
+    recentActivityIds: [],
+    recentReplyKeys: [],
+    calendarSlots: DEFAULT_CALENDAR_SLOTS.map((slot) => ({ ...slot })),
+    limitOverrides: {},
+    metricsEnabled: true,
+    callbackClicks: 0,
+    buttonVotes: {},
+    commercialRequests: {},
+    sellers: {},
     authorizedProfiles: {},
   };
 }

@@ -8,11 +8,19 @@ import { AfroditaConfigError, loadAfroditaConfig } from "./config.js";
 import { decideAction, recordPublishedAction, canPublish } from "./decision.js";
 import { safeErrorSummary, safeErrorType } from "./errors.js";
 import { generateReply } from "./generator.js";
-import { pollContent } from "./messages.js";
+import {
+  isCommercialInquiry,
+  isExplicitMediaRequest,
+  findRequestedVerifiedModel,
+  pollContent,
+  verifiedModelsPollContent,
+  verifiedModelsReply,
+} from "./messages.js";
 import { checkGroupAdministrator } from "./permissions.js";
 import { AfroditaStore } from "./store.js";
 import { installGracefulShutdown } from "./shutdown.js";
 import type { AfroditaDecision, AfroditaTopic, AuthorizedProfile } from "./types.js";
+import { getActiveVerifiedModels } from "./verified-users.js";
 import { readZeusVerification } from "./zeus-verification.js";
 
 const QUIET_FEEDBACK =
@@ -163,7 +171,13 @@ async function publishDecision(
   botUsername: string,
   store: AfroditaStore,
   decision: AfroditaDecision,
-  aiConfig: { endpoint?: string; apiKey?: string; model?: string },
+  aiConfig: {
+    endpoint?: string;
+    apiKey?: string;
+    model?: string;
+    supabaseUrl?: string;
+    supabaseKey?: string;
+  },
 ): Promise<void> {
   if (!isGroup(ctx) || !ctx.message) return;
 
@@ -171,6 +185,79 @@ async function publishDecision(
     const source = decision.action === "reply"
       ? removeBotMention(ctx.message.text ?? ctx.message.caption ?? "", botUsername)
       : "";
+    if (
+      decision.action === "reply" &&
+      isCommercialInquiry(source)
+    ) {
+      let models: Awaited<ReturnType<typeof getActiveVerifiedModels>> | undefined;
+      try {
+        if (aiConfig.supabaseUrl && aiConfig.supabaseKey) {
+          models = await getActiveVerifiedModels(ctx.chat.id, {
+            supabaseUrl: aiConfig.supabaseUrl,
+            supabaseKey: aiConfig.supabaseKey,
+          });
+        }
+        if (models?.length) {
+          const responseText = verifiedModelsReply(models);
+          if (!(await reserveAction(store, ctx.chat.id, decision))) return;
+          if (isExplicitMediaRequest(source)) {
+            const requestedModel = findRequestedVerifiedModel(source, models);
+            const mediaModel = requestedModel
+              ? requestedModel
+              : models.find((model) => model.media.length > 0);
+            const media = mediaModel?.media[0];
+            if (media) {
+              const caption =
+                `✨ ${mediaModel.displayName} · perfil verificado activo en este grupo.`;
+              try {
+                const options = {
+                  caption,
+                  reply_to_message_id: ctx.message.message_id,
+                };
+                if (media.type === "video") {
+                  await ctx.replyWithVideo(media.fileId, options);
+                } else if (media.type === "document") {
+                  await ctx.replyWithDocument(media.fileId, options);
+                } else {
+                  await ctx.replyWithPhoto(media.fileId, options);
+                }
+                return;
+              } catch (error) {
+                console.warn(
+                  `[AFRODITA] No se pudo enviar el multimedia asociado a una verificada (${errorName(error)}); se responderá con texto.`,
+                );
+                await ctx.reply(
+                  `${responseText} No pude mostrar el archivo multimedia en este momento.`,
+                  { reply_to_message_id: ctx.message.message_id },
+                );
+                return;
+              }
+            }
+            await ctx.reply(
+              `${responseText} No hay archivos multimedia autorizados asociados disponibles ahora.`,
+              { reply_to_message_id: ctx.message.message_id },
+            );
+            return;
+          }
+          await ctx.reply(responseText, {
+            reply_to_message_id: ctx.message.message_id,
+          });
+          return;
+        }
+      } catch (error) {
+        console.error(
+          `[AFRODITA] No se pudieron consultar modelos verificadas groupId=${ctx.chat.id} (${errorName(error)}).`,
+        );
+      }
+      if (!(await reserveAction(store, ctx.chat.id, decision))) return;
+      await ctx.reply(
+        models
+          ? verifiedModelsReply(models)
+          : "Ahora mismo no puedo confirmar qué perfiles o catálogos están activos. Inténtalo de nuevo más tarde. 💫",
+        { reply_to_message_id: ctx.message.message_id },
+      );
+      return;
+    }
     const generated = await generateReply(source, decision.topic, {
       endpoint: aiConfig.endpoint,
       apiKey: aiConfig.apiKey,
@@ -186,7 +273,22 @@ async function publishDecision(
 
   if (decision.action === "poll") {
     if (!(await reserveAction(store, ctx.chat.id, decision))) return;
-    const content = pollContent(decision.topic);
+    let content = pollContent(decision.topic);
+    if (aiConfig.supabaseUrl && aiConfig.supabaseKey) {
+      try {
+        const models = await getActiveVerifiedModels(ctx.chat.id, {
+          supabaseUrl: aiConfig.supabaseUrl,
+          supabaseKey: aiConfig.supabaseKey,
+        });
+        if (models.length > 0) {
+          content = verifiedModelsPollContent(decision.topic, models);
+        }
+      } catch (error) {
+        console.error(
+          `[AFRODITA] No se pudieron consultar modelos para la encuesta groupId=${ctx.chat.id} (${errorName(error)}).`,
+        );
+      }
+    }
     const sent = await ctx.api.sendPoll(ctx.chat.id, content.question, content.options, {
       is_anonymous: true,
       open_period: 3_600,
@@ -263,7 +365,7 @@ async function main(): Promise<void> {
   bot.command("afrodita", async (ctx) => {
     await ctx.reply(
       "Soy Afrodita 💫 Una persona administradora debe activarme con /afrodita_activar. " +
-        "Luego respondo si me mencionas o contestas uno de mis mensajes. " +
+        "Luego respondo si me mencionas, contestas uno de mis mensajes o preguntas directamente por catálogos, fotos, servicios o llamadas. " +
         "Puede autorizar un perfil verificado respondiendo a su mensaje con /afrodita_perfil, " +
         "o retirarlo con /afrodita_ocultar. Mis métricas son agregadas y no guardo el texto de la charla.",
     );
@@ -287,6 +389,7 @@ async function main(): Promise<void> {
     const username = bot.botInfo.username;
     const directed = directedMessage(ctx, username, bot.botInfo.id);
     const text = ctx.message.text ?? ctx.message.caption ?? "";
+    const commercialInquiry = isCommercialInquiry(text);
     const observation = {
       text: text.slice(0, 2_000),
       hourUtc: new Date(now).getUTCHours(),
@@ -303,6 +406,7 @@ async function main(): Promise<void> {
 
     const decision = decideAction(updated.state, {
       directedToBot: directed,
+      commercialInquiry,
       randomValue: Math.random(),
       now,
     });
@@ -311,6 +415,8 @@ async function main(): Promise<void> {
       endpoint: config.aiEndpoint,
       apiKey: config.aiApiKey,
       model: config.aiModel,
+      supabaseUrl: config.supabaseUrl,
+      supabaseKey: config.supabaseKey,
     });
   });
 
@@ -320,6 +426,11 @@ async function main(): Promise<void> {
       allowed_updates: ["message", "poll"],
       onStart: (info) => {
         console.log(`[AFRODITA] Iniciada como @${info.username}; IA externa ${config.aiEndpoint ? "habilitada" : "desactivada"}.`);
+        if (!config.supabaseUrl || !config.supabaseKey) {
+          console.warn(
+            "[AFRODITA] Supabase no está configurado; las recomendaciones dinámicas de verificadas están desactivadas.",
+          );
+        }
       },
     });
   } finally {
