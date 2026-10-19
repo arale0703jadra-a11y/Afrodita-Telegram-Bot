@@ -4,8 +4,9 @@ import { fileURLToPath } from "node:url";
 import { Bot } from "grammy";
 import type { Context } from "grammy";
 import { observeMessage } from "./analytics.js";
-import { loadAfroditaConfig } from "./config.js";
+import { AfroditaConfigError, loadAfroditaConfig } from "./config.js";
 import { decideAction, recordPublishedAction, canPublish } from "./decision.js";
+import { safeErrorSummary, safeErrorType } from "./errors.js";
 import { generateReply } from "./generator.js";
 import { pollContent } from "./messages.js";
 import { checkGroupAdministrator } from "./permissions.js";
@@ -167,7 +168,6 @@ async function publishDecision(
   if (!isGroup(ctx) || !ctx.message) return;
 
   if (decision.action === "reply" || decision.action === "participate") {
-    if (!(await reserveAction(store, ctx.chat.id, decision))) return;
     const source = decision.action === "reply"
       ? removeBotMention(ctx.message.text ?? ctx.message.caption ?? "", botUsername)
       : "";
@@ -177,6 +177,7 @@ async function publishDecision(
       model: aiConfig.model,
     });
     if (generated.silent || !generated.text) return;
+    if (!(await reserveAction(store, ctx.chat.id, decision))) return;
     await ctx.reply(generated.text, {
       reply_to_message_id: decision.action === "reply" ? ctx.message.message_id : undefined,
     });
@@ -249,7 +250,7 @@ async function main(): Promise<void> {
 
   bot.catch((error) => {
     console.error(
-      `[AFRODITA] Falló el procesamiento de una actualización (${error.error instanceof Error ? error.error.name : "unknown"}).`,
+      `[AFRODITA] Falló el procesamiento de una actualización (${safeErrorSummary(error.error)}).`,
     );
   });
 
@@ -327,12 +328,16 @@ async function main(): Promise<void> {
 }
 
 function errorName(error: unknown): string {
-  return error instanceof Error ? error.name : "unknown";
+  return safeErrorType(error);
 }
 
 void main().catch((error: unknown) => {
   console.error(
-    `[AFRODITA] No se pudo iniciar (${error instanceof Error ? error.name : "unknown"}).`,
+    `[AFRODITA] No se pudo iniciar: ${
+      error instanceof AfroditaConfigError
+        ? error.message
+        : `(${safeErrorSummary(error)})`
+    }.`,
   );
   process.exitCode = 1;
 });

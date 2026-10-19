@@ -54,6 +54,11 @@ test("poll updates store anonymous aggregate option counts and reconcile changed
       true,
     );
     assert.equal(
+      await store.recordPollUpdate("poll1", [{ voter_count: 0 }, { voter_count: 1 }]),
+      true,
+    );
+    assert.equal((await store.loadGroup(123)).pollVotes.productos, 1);
+    assert.equal(
       await store.recordPollUpdate("poll1", [{ voter_count: 1 }, { voter_count: 0 }]),
       true,
     );
@@ -62,6 +67,28 @@ test("poll updates store anonymous aggregate option counts and reconcile changed
     assert.equal(state.pollVotes.productos, 0);
     assert.equal(Object.keys(state).some((key) => /voter|userId/i.test(key)), false);
     assert.equal("poll1" in state.pollTallies, true);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("group state remains isolated by chat ID", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "afrodita-isolation-"));
+  try {
+    const store = new AfroditaStore(directory);
+    await Promise.all([
+      store.setEnabled(-100, true),
+      store.setEnabled(-200, false),
+      store.authorizeProfile(-100, { userId: 123, displayName: "Perfil" }),
+    ]);
+    const [first, second] = await Promise.all([
+      store.loadGroup(-100),
+      store.loadGroup(-200),
+    ]);
+    assert.equal(first.enabled, true);
+    assert.equal(first.authorizedProfiles["123"]?.displayName, "Perfil");
+    assert.equal(second.enabled, false);
+    assert.deepEqual(second.authorizedProfiles, {});
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
@@ -386,6 +413,14 @@ test("AI transport errors use the local catalog without logging error details", 
 });
 
 test("configuration rejects incomplete AI credentials and unsafe public endpoints", () => {
+  assert.throws(
+    () => loadAfroditaConfig({}),
+    (error: unknown) =>
+      error instanceof Error &&
+      error.message === "Falta AFRODITA_BOT_TOKEN." &&
+      error.name === "AfroditaConfigError" &&
+      !error.message.includes(testBotToken),
+  );
   assert.throws(
     () => loadAfroditaConfig({ AFRODITA_BOT_TOKEN: testBotToken, AFRODITA_AI_API_KEY: "key" }),
     /requiere AFRODITA_AI_CHAT_COMPLETIONS_URL/,

@@ -46,6 +46,12 @@ y start `npm start`. Railpack detecta `package-lock.json`, los scripts npm y
 configuración Railway obsoleto. Mantén una sola réplica: el polling y el
 almacenamiento son locales al proceso.
 
+grammY vuelve a intentar la recepción del polling ante errores transitorios y
+límites de Telegram. Las publicaciones salientes no se reintentan
+automáticamente: si Telegram o la red devuelve un error ambiguo, repetir la
+acción podría duplicar mensajes/encuestas. Los errores de límite registran el
+código y el tiempo `retry_after`, sin la descripción ni el contenido del mensaje.
+
 Configura `AFRODITA_BOT_TOKEN` como variable secreta del servicio. Añade las tres
 variables `AFRODITA_AI_CHAT_COMPLETIONS_URL`, `AFRODITA_AI_API_KEY` y
 `AFRODITA_AI_MODEL` solo si se habilita expresamente la IA externa. Para

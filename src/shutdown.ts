@@ -1,4 +1,5 @@
 import { EventEmitter } from "node:events";
+import { safeErrorType } from "./errors.js";
 
 interface StoppableBot {
   stop(): Promise<void>;
@@ -15,10 +16,10 @@ export function installGracefulShutdown(
 
   let stopping: Promise<void> | undefined;
   const shutdown = (): void => {
-    stopping ??= bot.stop().catch((error: unknown) => {
+    stopping ??= Promise.resolve().then(() => bot.stop()).catch((error: unknown) => {
       process.exitCode = 1;
       console.error(
-        `[AFRODITA] Falló el cierre del polling (${error instanceof Error ? error.name : "unknown"}).`,
+        `[AFRODITA] Falló el cierre del polling (${safeErrorType(error)}).`,
       );
     });
   };

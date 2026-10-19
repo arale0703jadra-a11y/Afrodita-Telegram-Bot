@@ -23,8 +23,18 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function finiteCount(value: unknown): number {
   return typeof value === "number" && Number.isFinite(value) && value >= 0
-    ? Math.floor(value)
+    ? Math.min(Number.MAX_SAFE_INTEGER, Math.floor(value))
     : 0;
+}
+
+function isSafePollId(value: string): boolean {
+  return (
+    value.length > 0 &&
+    value.length <= 256 &&
+    value !== "__proto__" &&
+    value !== "constructor" &&
+    value !== "prototype"
+  );
 }
 
 function normalizeState(value: unknown): AfroditaState {
@@ -53,7 +63,12 @@ function normalizeState(value: unknown): AfroditaState {
     : initial.activityByHour;
   const pollTallies: AfroditaState["pollTallies"] = {};
   for (const [pollId, rawTally] of Object.entries(rawTallies).slice(-30)) {
-    if (!isRecord(rawTally) || !Array.isArray(rawTally.topics) || !Array.isArray(rawTally.votes)) continue;
+    if (
+      !isSafePollId(pollId) ||
+      !isRecord(rawTally) ||
+      !Array.isArray(rawTally.topics) ||
+      !Array.isArray(rawTally.votes)
+    ) continue;
     const pollTopics = rawTally.topics.filter(
       (topic): topic is AfroditaTopic =>
         typeof topic === "string" && topics.includes(topic as AfroditaTopic),
@@ -69,9 +84,11 @@ function normalizeState(value: unknown): AfroditaState {
   const authorizedProfiles: Record<string, AuthorizedProfile> = {};
   for (const [key, rawProfile] of Object.entries(rawProfiles)) {
     if (
+      !/^[1-9]\d{0,15}$/.test(key) ||
       !isRecord(rawProfile) ||
       typeof rawProfile.userId !== "number" ||
       !Number.isSafeInteger(rawProfile.userId) ||
+      key !== String(rawProfile.userId) ||
       typeof rawProfile.displayName !== "string"
     ) continue;
     authorizedProfiles[key] = {
@@ -175,6 +192,7 @@ export class AfroditaStore {
     pollId: string,
     options: Array<{ voter_count: number }>,
   ): Promise<boolean> {
+    if (!isSafePollId(pollId)) return false;
     let found = false;
     let entries: string[];
     try {
@@ -223,6 +241,9 @@ export class AfroditaStore {
     pollId: string,
     topics: AfroditaTopic[],
   ): Promise<void> {
+    if (!isSafePollId(pollId)) {
+      throw new Error("AFRODITA_POLL_ID_INVALID");
+    }
     await this.updateGroup(chatId, (state) => {
       state.pollTallies[pollId] = { topics: [...topics], votes: topics.map(() => 0) };
       const oldPolls = Object.keys(state.pollTallies);

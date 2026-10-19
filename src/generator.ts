@@ -1,4 +1,5 @@
 import { catalogReply, isSafeGeneratedReply } from "./messages.js";
+import { safeErrorType } from "./errors.js";
 import type { AfroditaTopic } from "./types.js";
 
 export interface AiGeneratorConfig {
@@ -86,7 +87,7 @@ export async function generateReply(
     return fallback();
   } catch (error) {
     console.warn(
-      `[AFRODITA] Falló la solicitud al proveedor de IA (${error instanceof Error ? error.name : "unknown"}); se usará el catálogo local.`,
+      `[AFRODITA] Falló la solicitud al proveedor de IA (${safeErrorType(error)}); se usará el catálogo local.`,
     );
     return fallback();
   } finally {
