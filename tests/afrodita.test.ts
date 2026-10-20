@@ -327,6 +327,10 @@ test("topic classifier does not retain input or infer personal attributes", () =
 
 test("catalog replies vary and generated content rejects links, mentions, and sensitive claims", () => {
   assert.notEqual(catalogReply("general", 0), catalogReply("general", 0.99));
+  assert.notEqual(
+    pollContent("general", 0).question,
+    pollContent("general", 0.99).question,
+  );
   assert.deepEqual(pollContent("general").topics, [
     "productos",
     "servicios",
@@ -343,6 +347,10 @@ test("catalog replies vary and generated content rejects links, mentions, and se
 test("commercial request recognition is topic-focused and requires explicit media wording for images", () => {
   assert.equal(isCommercialInquiry("¿Tienen catálogo de servicios?"), true);
   assert.equal(isCommercialInquiry("¿Hay llamadas disponibles?"), true);
+  assert.equal(isCommercialInquiry("¿Cuánto cuesta el pack?"), true);
+  assert.equal(isCommercialInquiry("¿Qué fotos hay?"), true);
+  assert.equal(isCommercialInquiry("¿Está sola ahora?"), true);
+  assert.equal(isCommercialInquiry("sola"), false);
   assert.equal(isCommercialInquiry("Hola, ¿cómo estás?"), false);
   assert.equal(isExplicitMediaRequest("¿Me enseñas fotos?"), true);
   assert.equal(isExplicitMediaRequest("¿Tienen llamadas?"), false);
@@ -352,6 +360,18 @@ test("commercial request recognition is topic-focused and requires explicit medi
   ];
   assert.equal(findRequestedVerifiedModel("¿Tienes fotos de Ana Maria?", models)?.userId, 1);
   assert.equal(findRequestedVerifiedModel("¿Fotos de @luz_model?", models)?.userId, 2);
+});
+
+test("adult interest terms trigger contextual inquiries without classifying buyers as sellers", () => {
+  for (const text of [
+    "Me gustan las tetas",
+    "Quiero saber de sexting",
+    "¿Hay videollamadas?",
+    "¿Qué perfiles de escort están verificados?",
+  ]) {
+    assert.equal(isCommercialInquiry(text), true, text);
+  }
+  assert.equal(isCommercialInquiry("Hola, me gustan las películas"), false);
 });
 
 test("verified model polls use active model names and fit Telegram poll bounds", () => {
@@ -369,16 +389,39 @@ test("verified model polls use active model names and fit Telegram poll bounds",
       media: [],
     },
   ];
-  const poll = verifiedModelsPollContent("servicios", models);
-  assert.match(poll.question, /modelos verificadas/);
+  const poll = verifiedModelsPollContent("servicios", models, 0.5);
+  assert.match(poll.question, /creadora|perfil|catálogo/i);
   assert.deepEqual(poll.options, [
-    "Conocer a Ana",
-    "Conocer a Luz",
+    "Descubrir el perfil de Ana",
+    "Descubrir el perfil de Luz",
     "Otra recomendación",
   ]);
   assert.equal(poll.options.length, poll.topics.length);
   assert.ok(poll.options.length >= 2 && poll.options.length <= 10);
   assert.match(verifiedModelsReply(models), /Ana, Luz/);
+});
+
+test("verified model sales replies are contextual, varied, and do not assert private availability", () => {
+  const models: VerifiedModel[] = [
+    { groupId: -100, userId: 1, displayName: "Ana", media: [] },
+    { groupId: -100, userId: 2, displayName: "Luz", media: [] },
+  ];
+
+  const callReply = verifiedModelsReply(models, "¿Tienen videollamada?", 0);
+  const catalogReply = verifiedModelsReply(models, "¿Precio del catálogo?", 0);
+  const photosReply = verifiedModelsReply(models, "¿Hay fotos?", 0);
+  const availabilityReply = verifiedModelsReply(models, "¿Está sola ahora?", 0);
+
+  assert.match(callReply, /videollamada/i);
+  assert.match(catalogReply, /catálogo/i);
+  assert.match(photosReply, /fotos/i);
+  assert.match(availabilityReply, /no la disponibilidad personal/i);
+  assert.match(callReply, /Ana, Luz/);
+  assert.match(catalogReply, /sin compromiso/i);
+  assert.notEqual(
+    verifiedModelsReply(models, "¿Tienen videollamada?", 0),
+    verifiedModelsReply(models, "¿Tienen videollamada?", 0.99),
+  );
 });
 
 test("Supabase verified model query only returns active records for the requested group and caches safely", async () => {

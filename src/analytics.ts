@@ -1,5 +1,6 @@
 import { AFRODITA_TOPICS } from "./types.js";
 import type { AfroditaState, AfroditaTopic } from "./types.js";
+import { sanitizeIncomingText } from "./utils/sanitizer.js";
 
 const TOPIC_TERMS: Record<Exclude<AfroditaTopic, "general">, string[]> = {
   productos: ["producto", "vendo", "venta", "catalogo", "precio", "oferta"],
@@ -18,7 +19,7 @@ export interface MessageObservation {
 }
 
 export function classifyTopic(text: string): AfroditaTopic {
-  const normalized = text
+  const normalized = sanitizeIncomingText(text)
     .toLocaleLowerCase("es")
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "");

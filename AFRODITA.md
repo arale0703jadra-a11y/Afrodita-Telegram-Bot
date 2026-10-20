@@ -27,6 +27,7 @@ logs.
 - Las encuestas son anónimas de Telegram; se reciben actualizaciones de conteo agregado.
 - Las encuestas pueden incluir nombres de modelos verificadas activas del grupo cuando Supabase está configurado; se limitan a una por 24 horas, con un máximo de cuatro publicaciones diarias y 15 minutos entre publicaciones.
 - Ante consultas explícitas sobre catálogos, fotos, llamadas o servicios, AFRODITA puede responder con perfiles verificados activos del grupo. Solo envía un archivo multimedia asociado a la fila cuando la persona lo solicita explícitamente.
+- Los mensajes entrantes se normalizan antes de clasificar temas o consultas: se eliminan caracteres de control/invisibles y envolturas HTML/Markdown; el contenido nunca se ejecuta como HTML ni script.
 - Un perfil solo se presenta si una persona administradora lo autoriza respondiendo al mensaje de una persona que figure como verificada en el registro local de ZEUS. Antes de autorizar y presentar se vuelve a verificar la marca local; al publicarlo también se comprueba la membresía actual en Telegram. Usa `/afrodita_ocultar` en respuesta al mensaje para retirarlo.
 - Si el grupo prefiere que el bot no lea mensajes normales, no habilites la recepción amplia de mensajes en BotFather. En ese caso, Telegram puede limitar las interacciones disponibles.
 

@@ -1,5 +1,6 @@
 import type { AfroditaTopic } from "./types.js";
 import type { VerifiedModel } from "./verified-users.js";
+import { sanitizeIncomingText } from "./utils/sanitizer.js";
 
 const RESPONSES: Record<AfroditaTopic, string[]> = {
   productos: [
@@ -46,7 +47,10 @@ export function catalogReply(topic: AfroditaTopic, randomValue = Math.random()):
   return options[Math.max(0, index)];
 }
 
-export function pollContent(topic: AfroditaTopic): {
+export function pollContent(
+  topic: AfroditaTopic,
+  randomValue = Math.random(),
+): {
   question: string;
   options: string[];
   topics: AfroditaTopic[];
@@ -72,8 +76,17 @@ export function pollContent(topic: AfroditaTopic): {
     ...(topic === "general" ? [] : [topic]),
     ...topics.filter((candidate) => candidate !== topic),
   ].slice(0, 4);
+  const questions = [
+    "¿Qué tipo de recomendación o negocio local les interesa descubrir?",
+    "Si pudieran conocer un emprendimiento local hoy, ¿de qué sería?",
+    "¿Qué recomendación útil les gustaría encontrar en esta comunidad?",
+  ];
+  const questionIndex = Math.min(
+    questions.length - 1,
+    Math.max(0, Math.floor(randomValue * questions.length)),
+  );
   return {
-    question: "¿Qué tipo de recomendación o negocio local les interesa descubrir?",
+    question: questions[questionIndex]!,
     options: ordered.map((candidate) => labels[candidate as keyof typeof labels]),
     topics: ordered,
   };
@@ -82,18 +95,28 @@ export function pollContent(topic: AfroditaTopic): {
 export function verifiedModelsPollContent(
   topic: AfroditaTopic,
   models: readonly VerifiedModel[],
+  randomValue = Math.random(),
 ): { question: string; options: string[]; topics: AfroditaTopic[] } {
-  if (models.length === 0) return pollContent(topic);
+  if (models.length === 0) return pollContent(topic, randomValue);
   const uniqueModels = models.filter(
     (model, index, all) =>
       all.findIndex((candidate) => candidate.userId === model.userId) === index,
   );
   const options = uniqueModels.slice(0, 9).map((model) =>
-    `Conocer a ${plainProfileName(model.displayName)}`.slice(0, 100),
+    `Descubrir el perfil de ${plainProfileName(model.displayName)}`.slice(0, 100),
   );
   options.push("Otra recomendación");
+  const questionIndex = Math.min(
+    2,
+    Math.max(0, Math.floor(randomValue * 3)),
+  );
+  const questions = [
+    "¿Qué perfil de una creadora verificada te da curiosidad descubrir? 😉",
+    "A ver, ¿de quién te gustaría conocer el catálogo o las novedades? ✨",
+    "¿Qué creadora verificada te llamó la atención y qué te gustaría descubrir? 💫",
+  ];
   return {
-    question: "¿Qué te gustaría descubrir de las modelos verificadas del grupo?",
+    question: questions[questionIndex]!,
     options,
     topics: options.map((_, index) =>
       index < options.length - 1 ? "servicios" : "general",
@@ -103,10 +126,14 @@ export function verifiedModelsPollContent(
 
 export function isCommercialInquiry(text: string): boolean {
   const normalized = normalizeForMatching(text);
+  const asksWhetherAlone =
+    /\b(?:esta|anda|se encuentra)\s+sola\b/u.test(normalized) ||
+    /\bsola\s+(?:ahora|hoy|disponible)\b/u.test(normalized);
   const hasOfferKeyword =
-    /\b(?:catalogo|catalogos|fotos?|imagenes?|llamadas?|videollamadas?|servicios?|modelos?|contenido|precios?|reservas?|packs?)\b/u.test(normalized);
+    /\b(?:catalogo|catalogos|fotos?|imagenes?|llamadas?|videollamadas?|servicios?|modelos?|contenido|precios?|reservas?|packs?|sola|culo|tetas?|senos?|vagina|escort|sexting|novia virtual)\b/u.test(normalized);
   const hasInquiryIntent =
-    /\b(?:quiero|busco|tienen|hay|disponible|ver|muestr|compart|mand|recomi|alguien|donde|quien|puedo|me|need|want|looking|available)\w*\b/u.test(normalized);
+    /\b(?:quiero|busco|tienen|hay|disponible|ver|muestr|compart|mand|recomi|alguien|donde|quien|puedo|me|need|want|looking|available|esta|estan|anda|habla|cuesta|costar|vale|cuanto)\w*\b/u.test(normalized);
+  if (/\bsola\b/u.test(normalized)) return asksWhetherAlone;
   return hasOfferKeyword && (hasInquiryIntent || normalized.trim().split(/\s+/u).length <= 3);
 }
 
@@ -116,19 +143,59 @@ export function isExplicitMediaRequest(text: string): boolean {
   );
 }
 
-export function verifiedModelsReply(models: readonly VerifiedModel[]): string {
+export function verifiedModelsReply(
+  models: readonly VerifiedModel[],
+  inquiry = "",
+  randomValue = Math.random(),
+): string {
   const names = models
     .slice(0, 3)
     .map((model) => plainProfileName(model.displayName))
     .filter(Boolean);
   if (names.length === 0) {
-    return "Ahora mismo no encuentro perfiles verificados activos para recomendar. Si quieres, dime si buscas un catálogo, una llamada o información de servicios y lo vuelvo a comprobar. 💫";
+    return "Ahora mismo no encuentro perfiles verificados activos para recomendar. Si buscas un catálogo, fotos o información de una llamada, vuelve a preguntar más tarde. 💫";
   }
   const list = names.join(", ");
   const remaining = models.length > names.length
     ? ` y ${models.length - names.length} más`
     : "";
-  return `¡Claro! 💫 Entre las modelos verificadas activas del grupo están ${list}${remaining}. ¿Quieres conocer el catálogo o consultar por una llamada?`;
+  const normalized = normalizeForMatching(inquiry);
+  if (/\bsola\b/u.test(normalized)) {
+    return `Puedo confirmar qué perfiles están verificados, no la disponibilidad personal de nadie 💫. ${list}${remaining} tienen perfil activo; revisa únicamente los canales o la información que cada creadora haya publicado para consultas.`;
+  }
+
+  const intent = /\b(?:videollamadas?|llamadas?|sexting)\b/u.test(normalized)
+    ? "llamada"
+    : /\b(?:catalogos?|precios?|packs?|escort|novia virtual)\b/u.test(normalized)
+      ? "catalogo"
+      : /\b(?:fotos?|imagenes?)\b/u.test(normalized)
+        ? "fotos"
+        : "general";
+  const responses: Record<typeof intent, string[]> = {
+    llamada: [
+      `¿Buscas una videollamada? 😉 ${list}${remaining} tienen perfil verificado activo. Consulta la información que cada creadora haya publicado y confirma directamente sus condiciones y disponibilidad.`,
+      `Una llamada puede ser una forma divertida de conocer a alguien ✨. Revisa el perfil público de ${list}${remaining} y contacta solo por el canal que la creadora haya compartido.`,
+    ],
+    catalogo: [
+      `¿Con ganas de echar un vistazo? 😉 ${list}${remaining} tienen perfil verificado activo. Revisa sus catálogos publicados para conocer opciones y precios, sin compromiso.`,
+      `Los detalles buenos están en la información que cada creadora comparte ✨. Puedes revisar el perfil público de ${list}${remaining} y consultar allí sus opciones.`,
+    ],
+    fotos: [
+      `¿Buscas fotos o novedades? 👀 ${list}${remaining} tienen perfil verificado activo. Revisa el material que cada creadora haya publicado y consulta sus opciones por el canal que ella indique.`,
+      `Te ayudo a encontrar perfiles, no a compartir material privado 💫. Puedes revisar lo que ${list}${remaining} hayan publicado en sus perfiles y preguntar respetando sus preferencias.`,
+    ],
+    general: [
+      `¡Claro! 💫 Entre las creadoras verificadas activas están ${list}${remaining}. Echa un vistazo a la información que cada una comparte y consulta sus opciones sin presión.`,
+      `¿Te dio curiosidad? 😉 ${list}${remaining} tienen perfil verificado activo. Revisa sus novedades públicas y, si te interesa, usa únicamente el contacto que hayan compartido.`,
+      `Hay perfiles para descubrir ✨: ${list}${remaining}. Mira sus catálogos o novedades publicados y confirma directamente cada detalle con la creadora.`,
+    ],
+  };
+  const options = responses[intent];
+  const index = Math.min(
+    options.length - 1,
+    Math.max(0, Math.floor(randomValue * options.length)),
+  );
+  return options[index]!;
 }
 
 export function findRequestedVerifiedModel(
@@ -149,7 +216,7 @@ export function findRequestedVerifiedModel(
 }
 
 function normalizeForMatching(value: string): string {
-  return value
+  return sanitizeIncomingText(value)
     .toLocaleLowerCase("es")
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/gu, "");

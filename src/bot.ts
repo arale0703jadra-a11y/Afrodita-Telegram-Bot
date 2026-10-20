@@ -22,6 +22,7 @@ import { installGracefulShutdown } from "./shutdown.js";
 import type { AfroditaDecision, AfroditaTopic, AuthorizedProfile } from "./types.js";
 import { getActiveVerifiedModels } from "./verified-users.js";
 import { readZeusVerification } from "./zeus-verification.js";
+import { sanitizeIncomingText } from "./utils/sanitizer.js";
 
 const QUIET_FEEDBACK =
   /\b(?:no me menciones|no me etiquetes|deja de (?:escribir|mencionar)|para de (?:escribir|mencionar)|menos mensajes|demasiados mensajes|muchos mensajes|guarda silencio)\b/iu;
@@ -55,12 +56,12 @@ function directedMessage(ctx: Context, botUsername: string, botId: number): bool
   const message = ctx.message;
   if (!message) return false;
   if (message.reply_to_message?.from?.id === botId) return true;
-  const text = message.text ?? message.caption ?? "";
+  const text = sanitizeIncomingText(message.text ?? message.caption ?? "");
   return new RegExp(`@${botUsername.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "iu").test(text);
 }
 
 function removeBotMention(text: string, botUsername: string): string {
-  return text.replace(
+  return sanitizeIncomingText(text).replace(
     new RegExp(`@${botUsername.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "giu"),
     "",
   ).trim().slice(0, 600);
@@ -198,12 +199,14 @@ async function publishDecision(
           });
         }
         if (models?.length) {
-          const responseText = verifiedModelsReply(models);
+          const responseText = verifiedModelsReply(models, source);
           if (!(await reserveAction(store, ctx.chat.id, decision))) return;
           if (isExplicitMediaRequest(source)) {
             const requestedModel = findRequestedVerifiedModel(source, models);
             const mediaModel = requestedModel
-              ? requestedModel
+              ? requestedModel.media.length > 0
+                ? requestedModel
+                : undefined
               : models.find((model) => model.media.length > 0);
             const media = mediaModel?.media[0];
             if (media) {
@@ -273,7 +276,7 @@ async function publishDecision(
 
   if (decision.action === "poll") {
     if (!(await reserveAction(store, ctx.chat.id, decision))) return;
-    let content = pollContent(decision.topic);
+    let content = pollContent(decision.topic, Math.random());
     if (aiConfig.supabaseUrl && aiConfig.supabaseKey) {
       try {
         const models = await getActiveVerifiedModels(ctx.chat.id, {
@@ -281,7 +284,11 @@ async function publishDecision(
           supabaseKey: aiConfig.supabaseKey,
         });
         if (models.length > 0) {
-          content = verifiedModelsPollContent(decision.topic, models);
+          content = verifiedModelsPollContent(
+            decision.topic,
+            models,
+            Math.random(),
+          );
         }
       } catch (error) {
         console.error(
@@ -388,7 +395,9 @@ async function main(): Promise<void> {
     const now = Date.now();
     const username = bot.botInfo.username;
     const directed = directedMessage(ctx, username, bot.botInfo.id);
-    const text = ctx.message.text ?? ctx.message.caption ?? "";
+    const text = sanitizeIncomingText(
+      ctx.message.text ?? ctx.message.caption ?? "",
+    );
     const commercialInquiry = isCommercialInquiry(text);
     const observation = {
       text: text.slice(0, 2_000),
