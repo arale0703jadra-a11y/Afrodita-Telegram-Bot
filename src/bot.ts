@@ -1,6 +1,4 @@
 import "dotenv/config";
-import { dirname, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
 import { Bot } from "grammy";
 import type { Context } from "grammy";
 import { observeMessage } from "./analytics.js";
@@ -20,8 +18,7 @@ import { checkGroupAdministrator } from "./permissions.js";
 import { AfroditaStore } from "./store.js";
 import { installGracefulShutdown } from "./shutdown.js";
 import type { AfroditaDecision, AfroditaTopic, AuthorizedProfile } from "./types.js";
-import { getActiveVerifiedModels } from "./verified-users.js";
-import { readZeusVerification } from "./zeus-verification.js";
+import { getActiveVerifiedModels, isVerifiedCatalogUser } from "./verified-users.js";
 import { sanitizeIncomingText } from "./utils/sanitizer.js";
 
 const QUIET_FEEDBACK =
@@ -67,25 +64,11 @@ function removeBotMention(text: string, botUsername: string): string {
   ).trim().slice(0, 600);
 }
 
-const zeusStorageDirectory = process.env.AFRODITA_ZEUS_STORAGE_DIR?.trim() ||
-  resolve(dirname(fileURLToPath(import.meta.url)), "../../ZEUS/data/storage");
-let warnedUnavailableZeusStorage = false;
-
-async function isVerifiedInZeusStore(
-  chatId: number,
-  userId: number,
-): ReturnType<typeof readZeusVerification> {
-  const result = await readZeusVerification(zeusStorageDirectory, chatId, userId);
-  if (result.status === "unavailable" && !warnedUnavailableZeusStorage) {
-    console.warn(
-      `[AFRODITA] El almacén local de ZEUS no está disponible (${result.reason}); los perfiles fallarán de forma segura.`,
-    );
-    warnedUnavailableZeusStorage = true;
-  }
-  return result;
-}
-
-async function approveProfile(ctx: Context, store: AfroditaStore): Promise<void> {
+async function approveProfile(
+  ctx: Context,
+  store: AfroditaStore,
+  supabaseConfig: { supabaseUrl?: string; supabaseKey?: string },
+): Promise<void> {
   if (!isGroup(ctx) || !ctx.message || !ctx.from) return;
   if (!(await requireGroupAdministrator(ctx, ctx.chat.id))) return;
   const target = ctx.message.reply_to_message?.from;
@@ -93,12 +76,17 @@ async function approveProfile(ctx: Context, store: AfroditaStore): Promise<void>
     await ctx.reply("Responde al mensaje de una creadora verificada para autorizar su perfil.");
     return;
   }
-  const verification = await isVerifiedInZeusStore(ctx.chat.id, target.id);
-  if (verification.status === "unavailable") {
-    await ctx.reply("No pude consultar el registro local de ZEUS; no autoricé el perfil.");
+  let isVerified: boolean;
+  try {
+    isVerified = await isVerifiedCatalogUser(ctx.chat.id, target.id, supabaseConfig);
+  } catch (error) {
+    console.warn(
+      `[AFRODITA] No se pudo confirmar la verificación en Supabase (${errorName(error)}); no se autorizó el perfil.`,
+    );
+    await ctx.reply("No pude confirmar la verificación actual; no autoricé el perfil.");
     return;
   }
-  if (verification.status !== "verified") {
+  if (!isVerified) {
     await ctx.reply("Ese usuario no figura como verificado en la configuración de ZEUS.");
     return;
   }
@@ -305,12 +293,19 @@ async function publishDecision(
   }
 
   if (decision.action === "profile") {
-    const verification = await isVerifiedInZeusStore(ctx.chat.id, decision.profile.userId);
-    if (verification.status === "not_verified") {
+    let isVerified: boolean;
+    try {
+      isVerified = await isVerifiedCatalogUser(ctx.chat.id, decision.profile.userId, aiConfig);
+    } catch (error) {
+      console.warn(
+        `[AFRODITA] No se pudo revalidar el perfil en Supabase (${errorName(error)}).`,
+      );
+      return;
+    }
+    if (!isVerified) {
       await store.removeProfile(ctx.chat.id, decision.profile.userId);
       return;
     }
-    if (verification.status === "unavailable") return;
     let member;
     try {
       member = await ctx.api.getChatMember(ctx.chat.id, decision.profile.userId);
@@ -379,7 +374,12 @@ async function main(): Promise<void> {
   });
   bot.command("afrodita_activar", async (ctx) => setGroupEnabled(ctx, store, true));
   bot.command("afrodita_pausar", async (ctx) => setGroupEnabled(ctx, store, false));
-  bot.command("afrodita_perfil", async (ctx) => approveProfile(ctx, store));
+  bot.command("afrodita_perfil", async (ctx) =>
+    approveProfile(ctx, store, {
+      supabaseUrl: config.supabaseUrl,
+      supabaseKey: config.supabaseKey,
+    }),
+  );
   bot.command("afrodita_ocultar", async (ctx) => revokeProfile(ctx, store));
 
   bot.on("poll", async (ctx) => {

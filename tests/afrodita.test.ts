@@ -29,11 +29,14 @@ import { loadAfroditaConfig } from "../src/config.js";
 import {
   clearVerifiedModelsCache,
   getActiveVerifiedModels,
+  isVerifiedCatalogUser,
+  invalidateVerifiedModelsCache,
   type VerifiedModel,
 } from "../src/verified-users.js";
 
 const now = Date.UTC(2026, 9, 14, 15, 0);
 const testBotToken = `12345678:${"x".repeat(35)}`;
+const publicSupabaseTestKey = "sb_publishable_test-key";
 
 test("analytics stores aggregate topics, UTC activity, and replies only", () => {
   const state = initialAfroditaState();
@@ -424,63 +427,179 @@ test("verified model sales replies are contextual, varied, and do not assert pri
   );
 });
 
-test("Supabase verified model query only returns active records for the requested group and caches safely", async () => {
+test("verified catalog RPC returns only allowlisted-group identities and caches safely", async () => {
   clearVerifiedModelsCache();
   let calls = 0;
   let requestUrl: URL | undefined;
   let authorization = "";
+  let requestMethod = "";
+  let requestBody = "";
   const fetcher: typeof fetch = async (input, init) => {
     calls += 1;
     requestUrl = new URL(input instanceof Request ? input.url : String(input));
     authorization = new Headers(init?.headers).get("authorization") ?? "";
+    requestMethod = init?.method ?? "GET";
+    requestBody = String(init?.body ?? "");
     return new Response(JSON.stringify([
       {
         group_id: -100,
         user_id: 123,
-        verified: true,
-        revoked_at: null,
         username: "ana",
         display_name: "Ana",
-        photo_file_id: "telegram-file-id",
-        media: [{ type: "video", file_id: "video-file-id" }],
       },
       {
         group_id: -200,
         user_id: 456,
-        verified: true,
-        revoked_at: null,
         display_name: "Otro grupo",
       },
       {
-        group_id: -100,
+        group_id: -200,
         user_id: 789,
-        verified: false,
-        revoked_at: null,
-        display_name: "Revocada",
+        display_name: "Fila de otro grupo/contrato inválido",
       },
     ]), { status: 200 });
   };
   const config = {
     supabaseUrl: "https://example.supabase.co",
-    supabaseKey: "read-only-test-key",
+    supabaseKey: publicSupabaseTestKey,
   };
 
-  const first = await getActiveVerifiedModels(-100, config, fetcher, 100);
+  const cacheTime = Date.now();
+  const first = await getActiveVerifiedModels(-100, config, fetcher, cacheTime);
   first[0]!.media.push({ fileId: "mutated", type: "photo" });
-  const second = await getActiveVerifiedModels(-100, config, fetcher, 101);
+  const second = await getActiveVerifiedModels(-100, config, fetcher, cacheTime + 1);
 
   assert.equal(calls, 1);
-  assert.equal(authorization, "Bearer read-only-test-key");
-  assert.equal(requestUrl?.searchParams.get("group_id"), "eq.-100");
-  assert.equal(requestUrl?.searchParams.get("verified"), "eq.true");
-  assert.equal(requestUrl?.searchParams.get("revoked_at"), "is.null");
+  assert.equal(authorization, `Bearer ${publicSupabaseTestKey}`);
+  assert.equal(requestUrl?.pathname, "/rest/v1/rpc/get_afrodita_verified_catalog");
+  assert.equal(requestMethod, "POST");
+  assert.deepEqual(JSON.parse(requestBody), { p_group_id: -100 });
   assert.equal(second.length, 1);
   assert.equal(second[0]?.displayName, "Ana");
-  assert.deepEqual(second[0]?.media, [
-    { fileId: "telegram-file-id", type: "photo" },
-    { fileId: "video-file-id", type: "video" },
-  ]);
+  assert.deepEqual(second[0]?.media, []);
   clearVerifiedModelsCache();
+});
+
+test("catalog cache expires after 30 seconds and can be invalidated for one group", async () => {
+  clearVerifiedModelsCache();
+  let calls = 0;
+  let includeUser = true;
+  const fetcher: typeof fetch = async () => {
+    calls += 1;
+    return new Response(JSON.stringify(includeUser
+      ? [{ group_id: -100, user_id: 123, display_name: "Ana" }]
+      : []), { status: 200 });
+  };
+  const config = {
+    supabaseUrl: "https://example.supabase.co",
+    supabaseKey: publicSupabaseTestKey,
+  };
+
+  assert.equal((await getActiveVerifiedModels(-100, config, fetcher, 1_000)).length, 1);
+  includeUser = false;
+  assert.equal((await getActiveVerifiedModels(-100, config, fetcher, 30_999)).length, 1);
+  assert.equal(calls, 1);
+  assert.equal((await getActiveVerifiedModels(-100, config, fetcher, 31_001)).length, 0);
+  assert.equal(calls, 2);
+
+  includeUser = true;
+  invalidateVerifiedModelsCache(-100, config.supabaseUrl);
+  assert.equal((await getActiveVerifiedModels(-100, config, fetcher, 31_002)).length, 1);
+  includeUser = false;
+  invalidateVerifiedModelsCache(-100, config.supabaseUrl);
+  assert.equal((await getActiveVerifiedModels(-100, config, fetcher, 31_003)).length, 0);
+  assert.equal(calls, 4);
+  clearVerifiedModelsCache();
+});
+
+test("catalog reader does not make a request when public Supabase credentials are absent", async () => {
+  clearVerifiedModelsCache();
+  let calls = 0;
+  await assert.rejects(
+    getActiveVerifiedModels(
+      -100,
+      {},
+      async () => {
+        calls += 1;
+        return new Response("[]", { status: 200 });
+      },
+    ),
+    /AFRODITA_SUPABASE_NOT_CONFIGURED/,
+  );
+  assert.equal(calls, 0);
+});
+
+test("profile verification bypasses cache and follows the server's persisted active state", async () => {
+  clearVerifiedModelsCache();
+  const config = {
+    supabaseUrl: "https://example.supabase.co",
+    supabaseKey: publicSupabaseTestKey,
+  };
+  let active = true;
+  let calls = 0;
+  const fetcher: typeof fetch = async () => {
+    calls += 1;
+    return new Response(JSON.stringify(active
+      ? [{
+          group_id: -100,
+          user_id: 123,
+          display_name: "Ana",
+          valid_until: "2020-01-01T00:00:00.000Z",
+        }]
+      : []), { status: 200 });
+  };
+
+  assert.equal(await isVerifiedCatalogUser(-100, 123, config, fetcher), true);
+  active = false;
+  assert.equal(await isVerifiedCatalogUser(-100, 123, config, fetcher), false);
+  assert.equal(calls, 2);
+  clearVerifiedModelsCache();
+});
+
+test("catalog reader surfaces authorization failures without returning cached success", async () => {
+  clearVerifiedModelsCache();
+  const config = {
+    supabaseUrl: "https://example.supabase.co",
+    supabaseKey: publicSupabaseTestKey,
+  };
+  for (const status of [401, 403]) {
+    await assert.rejects(
+      getActiveVerifiedModels(
+        -100,
+        config,
+        async () => new Response("{}", { status }),
+      ),
+      new RegExp(`AFRODITA_SUPABASE_HTTP_${status}`),
+    );
+  }
+});
+
+test("catalog reader reports timeout and rejects a malformed RPC response", async () => {
+  clearVerifiedModelsCache();
+  const config = {
+    supabaseUrl: "https://example.supabase.co",
+    supabaseKey: publicSupabaseTestKey,
+  };
+  await assert.rejects(
+    getActiveVerifiedModels(
+      -100,
+      config,
+      (_input, init) => new Promise((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () => reject(new Error("aborted")));
+      }),
+      Date.now(),
+      { timeoutMs: 5 },
+    ),
+    /AFRODITA_SUPABASE_TIMEOUT/,
+  );
+  await assert.rejects(
+    getActiveVerifiedModels(
+      -100,
+      config,
+      async () => new Response(JSON.stringify({ rows: [] }), { status: 200 }),
+    ),
+    /AFRODITA_SUPABASE_RESPONSE_INVALID/,
+  );
 });
 
 test("AI generation is opt-in, only receives the directed message, and safely falls back", async () => {
@@ -612,7 +731,7 @@ test("configuration rejects incomplete AI credentials and unsafe public endpoint
     () => loadAfroditaConfig({
       AFRODITA_BOT_TOKEN: testBotToken,
       AFRODITA_SUPABASE_URL: "http://remote.example",
-      AFRODITA_SUPABASE_KEY: "key",
+      AFRODITA_SUPABASE_KEY: publicSupabaseTestKey,
     }),
     /debe usar HTTPS/,
   );
@@ -620,9 +739,30 @@ test("configuration rejects incomplete AI credentials and unsafe public endpoint
     loadAfroditaConfig({
       AFRODITA_BOT_TOKEN: testBotToken,
       AFRODITA_SUPABASE_URL: "https://example.supabase.co/",
-      AFRODITA_SUPABASE_KEY: "read-only-key",
+      AFRODITA_SUPABASE_KEY: publicSupabaseTestKey,
     }).supabaseUrl,
     "https://example.supabase.co",
+  );
+  assert.throws(
+    () => loadAfroditaConfig({
+      AFRODITA_BOT_TOKEN: testBotToken,
+      AFRODITA_SUPABASE_URL: "https://example.supabase.co",
+      AFRODITA_SUPABASE_KEY: "service_role_test_key",
+    }),
+    /publishable o JWT anon/,
+  );
+  const anonJwt = [
+    "header",
+    Buffer.from(JSON.stringify({ role: "anon" })).toString("base64url"),
+    "signature",
+  ].join(".");
+  assert.equal(
+    loadAfroditaConfig({
+      AFRODITA_BOT_TOKEN: testBotToken,
+      AFRODITA_SUPABASE_URL: "https://example.supabase.co",
+      AFRODITA_SUPABASE_KEY: anonJwt,
+    }).supabaseKey,
+    anonJwt,
   );
   assert.throws(
     () => loadAfroditaConfig({ AFRODITA_BOT_TOKEN: "malformed" }),

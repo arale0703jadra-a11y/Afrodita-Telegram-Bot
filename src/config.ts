@@ -15,6 +15,26 @@ export class AfroditaConfigError extends Error {
   }
 }
 
+function isPublicSupabaseKey(value: string): boolean {
+  if (/^sb_publishable_[A-Za-z0-9_-]+$/u.test(value)) return true;
+  const parts = value.split(".");
+  if (parts.length !== 3) return false;
+  try {
+    const payload = JSON.parse(
+      Buffer.from(parts[1]!, "base64url").toString("utf8"),
+    ) as unknown;
+    return (
+      typeof payload === "object" &&
+      payload !== null &&
+      !Array.isArray(payload) &&
+      "role" in payload &&
+      payload.role === "anon"
+    );
+  } catch {
+    return false;
+  }
+}
+
 export function loadAfroditaConfig(
   env: NodeJS.ProcessEnv = process.env,
 ): AfroditaConfig {
@@ -54,6 +74,11 @@ export function loadAfroditaConfig(
   if (Boolean(supabaseUrl) !== Boolean(supabaseKey)) {
     throw new AfroditaConfigError(
       "La conexión Supabase requiere AFRODITA_SUPABASE_URL y AFRODITA_SUPABASE_KEY.",
+    );
+  }
+  if (supabaseKey && !isPublicSupabaseKey(supabaseKey)) {
+    throw new AfroditaConfigError(
+      "AFRODITA_SUPABASE_KEY debe ser una clave publishable o JWT anon de solo lectura; no uses service_role ni una clave secreta.",
     );
   }
   if (supabaseUrl) {
