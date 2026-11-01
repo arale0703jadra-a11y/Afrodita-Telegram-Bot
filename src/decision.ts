@@ -5,6 +5,7 @@ import type {
   AfroditaLimits,
   AfroditaState,
 } from "./types.js";
+import { localDateTime } from "./time.js";
 
 export interface DecisionContext {
   directedToBot: boolean;
@@ -22,13 +23,29 @@ export function canPublish(
 ): boolean {
   const effective = { ...DEFAULT_AFRODITA_LIMITS, ...limits };
   if (!state.enabled) return false;
+  const category = action === "poll"
+    ? state.publications.commercial_poll
+    : action === "profile"
+      ? state.publications.verified_promotion
+      : undefined;
+  if (category) {
+    if (!category.enabled) return false;
+    const date = localDateTime(now, state.timeZone).date;
+    const publishedToday = category.utcDay === date
+      ? category.publishedToday
+      : 0;
+    if (publishedToday >= category.maxPerDay) return false;
+    if (
+      category.lastPublishedAt > 0 &&
+      now - category.lastPublishedAt < category.minIntervalMs
+    ) return false;
+    return now >= state.quietUntil;
+  }
   const currentDay = new Date(now).toISOString().slice(0, 10);
   const postsToday = state.utcDay === currentDay ? state.postsToday : 0;
   if (postsToday >= effective.maxPostsPerDay) return false;
   if (now - state.lastActionAt < effective.minPostIntervalMs) return false;
   if (now < state.quietUntil) return false;
-  if (action === "poll" && now - state.lastPollAt < effective.pollIntervalMs) return false;
-  if (action === "profile" && now - state.lastProfileAt < effective.profileIntervalMs) return false;
   return true;
 }
 
@@ -51,12 +68,15 @@ export function decideAction(
 
   if (
     state.messagesSincePoll >= 40 &&
+    state.publications.commercial_poll.activityEnabled &&
     canPublish(state, "poll", context.now, limits)
   ) {
     return { action: "poll", topic: preferredTopic(state) };
   }
   if (
     Object.keys(state.authorizedProfiles).length > 0 &&
+    state.messagesSincePromotion >= 30 &&
+    state.publications.verified_promotion.activityEnabled &&
     canPublish(state, "profile", context.now, limits) &&
     context.randomValue < 0.01
   ) {
@@ -95,5 +115,6 @@ export function recordPublishedAction(
     state.messagesSincePoll = 0;
   } else if (action === "profile") {
     state.lastProfileAt = now;
+    state.messagesSincePromotion = 0;
   }
 }

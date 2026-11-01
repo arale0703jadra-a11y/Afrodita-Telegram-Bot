@@ -1,20 +1,34 @@
-import "dotenv/config";
+import type { EventEmitter } from "node:events";
 import { Bot } from "grammy";
 import type { Context } from "grammy";
 import { observeMessage } from "./analytics.js";
-import { AfroditaConfigError, loadAfroditaConfig } from "./config.js";
-import { decideAction, recordPublishedAction, canPublish } from "./decision.js";
+import type { AfroditaConfig } from "./config.js";
+import { decideAction } from "./decision.js";
 import { safeErrorSummary, safeErrorType } from "./errors.js";
 import { generateReply } from "./generator.js";
 import {
+  handleAdminMenuCallback,
+  showAdminMenu,
+} from "./admin-menu.js";
+import {
   isCommercialInquiry,
   isExplicitMediaRequest,
-  findRequestedVerifiedModel,
-  pollContent,
+  entertainmentPollContent,
+  selectMediaProfile,
   verifiedModelsPollContent,
   verifiedModelsReply,
+  saltedRandomValue,
 } from "./messages.js";
 import { checkGroupAdministrator } from "./permissions.js";
+import {
+  getEligiblePromotionProfiles,
+  resolvePromotionProfiles,
+  publishCommunityReply,
+  publishPoll,
+  publishProfilePromotion,
+  publishScheduledJob,
+} from "./publishers.js";
+import { PublicationScheduler } from "./scheduler.js";
 import { AfroditaStore } from "./store.js";
 import { installGracefulShutdown } from "./shutdown.js";
 import type { AfroditaDecision, AfroditaTopic, AuthorizedProfile } from "./types.js";
@@ -68,6 +82,7 @@ async function approveProfile(
   ctx: Context,
   store: AfroditaStore,
   supabaseConfig: { supabaseUrl?: string; supabaseKey?: string },
+  fetcher: typeof fetch,
 ): Promise<void> {
   if (!isGroup(ctx) || !ctx.message || !ctx.from) return;
   if (!(await requireGroupAdministrator(ctx, ctx.chat.id))) return;
@@ -78,7 +93,12 @@ async function approveProfile(
   }
   let isVerified: boolean;
   try {
-    isVerified = await isVerifiedCatalogUser(ctx.chat.id, target.id, supabaseConfig);
+    isVerified = await isVerifiedCatalogUser(
+      ctx.chat.id,
+      target.id,
+      supabaseConfig,
+      fetcher,
+    );
   } catch (error) {
     console.warn(
       `[AFRODITA] No se pudo confirmar la verificación en Supabase (${errorName(error)}); no se autorizó el perfil.`,
@@ -141,19 +161,32 @@ async function revokeProfile(ctx: Context, store: AfroditaStore): Promise<void> 
   await ctx.reply("Listo, ya no presentaré ese perfil.");
 }
 
-async function reserveAction(
+async function setPromotionConsent(
+  ctx: Context,
   store: AfroditaStore,
-  chatId: number,
-  decision: AfroditaDecision,
+  supabaseConfig: { supabaseUrl?: string; supabaseKey?: string },
+  enabled: boolean,
+  fetcher: typeof fetch,
 ): Promise<boolean> {
-  const now = Date.now();
-  const updated = await store.updateGroup(chatId, (state) => {
-    if (!canPublish(state, decision.action, now)) return false;
-    recordPublishedAction(state, decision.action, now);
-    return true;
-  });
-  return updated.result;
+  if (!isGroup(ctx) || !ctx.from || ctx.from.is_bot) {
+    await ctx.reply("Este consentimiento solo puede gestionarse desde el grupo.");
+    return false;
+  }
+  // Modelo definitivo: la lista de verificadas ES la autorizacion. Estos
+  // comandos ya no mutan estado: informan y no pueden cambiar la verificacion.
+  void store;
+  void supabaseConfig;
+  void fetcher;
+  await ctx.reply(
+    enabled
+      ? "Ya estás en la lista de verificadas de este grupo: tu participación en promociones está autorizada automáticamente. Solo la administración gestiona la lista."
+      : "Las verificadas no pueden retirarse de la lista por sí mismas; únicamente la administración puede modificarla. Tu verificación sigue intacta.",
+  );
+  return true;
 }
+
+
+
 
 async function publishDecision(
   ctx: Context,
@@ -167,6 +200,7 @@ async function publishDecision(
     supabaseUrl?: string;
     supabaseKey?: string;
   },
+  fetcher: typeof fetch,
 ): Promise<void> {
   if (!isGroup(ctx) || !ctx.message) return;
 
@@ -181,21 +215,35 @@ async function publishDecision(
       let models: Awaited<ReturnType<typeof getActiveVerifiedModels>> | undefined;
       try {
         if (aiConfig.supabaseUrl && aiConfig.supabaseKey) {
-          models = await getActiveVerifiedModels(ctx.chat.id, {
+          const catalog = await getActiveVerifiedModels(ctx.chat.id, {
             supabaseUrl: aiConfig.supabaseUrl,
             supabaseKey: aiConfig.supabaseKey,
-          });
+          }, fetcher);
+          const state = await store.loadGroup(ctx.chat.id);
+          models = catalog.filter(
+            (model) => state.authorizedProfiles[String(model.userId)] !== undefined,
+          );
         }
         if (models?.length) {
           const responseText = verifiedModelsReply(models, source);
-          if (!(await reserveAction(store, ctx.chat.id, decision))) return;
           if (isExplicitMediaRequest(source)) {
-            const requestedModel = findRequestedVerifiedModel(source, models);
-            const mediaModel = requestedModel
-              ? requestedModel.media.length > 0
-                ? requestedModel
-                : undefined
-              : models.find((model) => model.media.length > 0);
+            const selection = selectMediaProfile(source, models);
+            if (selection.kind === "unresolved") {
+              await publishCommunityReply(
+                () => ctx.reply(
+                  "No pude identificar un perfil para esa solicitud. Puedes pedir contenido sin indicar un perfil específico.",
+                  { reply_to_message_id: ctx.message!.message_id },
+                ),
+                store,
+                ctx.chat.id,
+                ctx.from?.id,
+              );
+              return;
+            }
+            const mediaModel = selection.kind === "profile" &&
+                selection.model.media.length > 0
+              ? selection.model
+              : undefined;
             const media = mediaModel?.media[0];
             if (media) {
               const caption =
@@ -205,34 +253,47 @@ async function publishDecision(
                   caption,
                   reply_to_message_id: ctx.message.message_id,
                 };
-                if (media.type === "video") {
-                  await ctx.replyWithVideo(media.fileId, options);
-                } else if (media.type === "document") {
-                  await ctx.replyWithDocument(media.fileId, options);
-                } else {
-                  await ctx.replyWithPhoto(media.fileId, options);
-                }
+                const sent = await publishCommunityReply(async () => {
+                  if (media.type === "video") {
+                    await ctx.replyWithVideo(media.fileId, options);
+                  } else if (media.type === "document") {
+                    await ctx.replyWithDocument(media.fileId, options);
+                  } else {
+                    await ctx.replyWithPhoto(media.fileId, options);
+                  }
+                }, store, ctx.chat.id, ctx.from?.id);
+                if (!sent) return;
                 return;
               } catch (error) {
                 console.warn(
-                  `[AFRODITA] No se pudo enviar el multimedia asociado a una verificada (${errorName(error)}); se responderá con texto.`,
-                );
-                await ctx.reply(
-                  `${responseText} No pude mostrar el archivo multimedia en este momento.`,
-                  { reply_to_message_id: ctx.message.message_id },
+                  `[AFRODITA] No se confirmó el envío multimedia; no se reintentará para evitar duplicados (${errorName(error)}).`,
                 );
                 return;
               }
             }
-            await ctx.reply(
-              `${responseText} No hay archivos multimedia autorizados asociados disponibles ahora.`,
-              { reply_to_message_id: ctx.message.message_id },
+            const unavailableText = selection.kind === "profile" &&
+                selection.source === "requested"
+              ? "No hay archivos multimedia autorizados asociados a ese perfil ahora."
+              : `${responseText} No hay archivos multimedia autorizados asociados disponibles ahora.`;
+            await publishCommunityReply(
+              () => ctx.reply(
+                unavailableText,
+                { reply_to_message_id: ctx.message!.message_id },
+              ),
+              store,
+              ctx.chat.id,
+              ctx.from?.id,
             );
             return;
           }
-          await ctx.reply(responseText, {
-            reply_to_message_id: ctx.message.message_id,
-          });
+          await publishCommunityReply(
+            () => ctx.reply(responseText, {
+              reply_to_message_id: ctx.message!.message_id,
+            }),
+            store,
+            ctx.chat.id,
+            ctx.from?.id,
+          );
           return;
         }
       } catch (error) {
@@ -240,12 +301,16 @@ async function publishDecision(
           `[AFRODITA] No se pudieron consultar modelos verificadas groupId=${ctx.chat.id} (${errorName(error)}).`,
         );
       }
-      if (!(await reserveAction(store, ctx.chat.id, decision))) return;
-      await ctx.reply(
-        models
-          ? verifiedModelsReply(models)
-          : "Ahora mismo no puedo confirmar qué perfiles o catálogos están activos. Inténtalo de nuevo más tarde. 💫",
-        { reply_to_message_id: ctx.message.message_id },
+      await publishCommunityReply(
+        () => ctx.reply(
+          models
+            ? verifiedModelsReply(models)
+            : "Ahora mismo no puedo confirmar qué perfiles o catálogos están activos. Inténtalo de nuevo más tarde. 💫",
+          { reply_to_message_id: ctx.message!.message_id },
+        ),
+        store,
+        ctx.chat.id,
+        ctx.from?.id,
       );
       return;
     }
@@ -253,81 +318,88 @@ async function publishDecision(
       endpoint: aiConfig.endpoint,
       apiKey: aiConfig.apiKey,
       model: aiConfig.model,
-    });
+    }, Math.random(), fetcher);
     if (generated.silent || !generated.text) return;
-    if (!(await reserveAction(store, ctx.chat.id, decision))) return;
-    await ctx.reply(generated.text, {
-      reply_to_message_id: decision.action === "reply" ? ctx.message.message_id : undefined,
-    });
+    await publishCommunityReply(() => ctx.reply(generated.text!, {
+      reply_to_message_id: decision.action === "reply"
+        ? ctx.message!.message_id
+        : undefined,
+    }), store, ctx.chat.id, ctx.from?.id);
     return;
   }
 
   if (decision.action === "poll") {
-    if (!(await reserveAction(store, ctx.chat.id, decision))) return;
-    let content = pollContent(decision.topic, Math.random());
-    if (aiConfig.supabaseUrl && aiConfig.supabaseKey) {
-      try {
-        const models = await getActiveVerifiedModels(ctx.chat.id, {
-          supabaseUrl: aiConfig.supabaseUrl,
-          supabaseKey: aiConfig.supabaseKey,
-        });
-        if (models.length > 0) {
+    const dateSalt = new Date().toISOString().slice(0, 10);
+    let content = entertainmentPollContent(decision.topic, Math.random(), dateSalt);
+    try {
+      // Encuesta personalizada: solo perfiles YA en la lista de verificadas
+      // (lista = autorizacion; catalogo de ZEUS si esta disponible).
+      const eligible = await resolvePromotionProfiles(
+        store,
+        ctx.api,
+        ctx.chat.id,
+        aiConfig,
+        fetcher,
+      );
+      if (eligible.length > 0) {
+        const varied = saltedRandomValue(Math.random(), dateSalt);
+        if (varied < 0.5) {
+          const groupState = await store.loadGroup(ctx.chat.id);
           content = verifiedModelsPollContent(
             decision.topic,
-            models,
-            Math.random(),
+            eligible.map((candidate) => {
+              const stored = groupState.authorizedProfiles[String(candidate.userId)];
+              return {
+                groupId: ctx.chat.id,
+                userId: candidate.userId,
+                displayName: candidate.displayName,
+                ...(stored?.username ? { username: stored.username } : {}),
+                media: [],
+              };
+            }),
+            varied,
           );
         }
-      } catch (error) {
-        console.error(
-          `[AFRODITA] No se pudieron consultar modelos para la encuesta groupId=${ctx.chat.id} (${errorName(error)}).`,
-        );
       }
+    } catch {
+      // Sin perfiles elegibles se conserva la encuesta general del grupo.
     }
-    const sent = await ctx.api.sendPoll(ctx.chat.id, content.question, content.options, {
-      is_anonymous: true,
-      open_period: 3_600,
-    });
-    await store.registerPoll(ctx.chat.id, sent.poll.id, content.topics);
+    await publishPoll(
+      ctx.api,
+      store,
+      ctx.chat.id,
+      "commercial_poll",
+      content,
+      { kind: "activity" },
+    );
     return;
   }
 
   if (decision.action === "profile") {
-    let isVerified: boolean;
+    let profiles;
     try {
-      isVerified = await isVerifiedCatalogUser(ctx.chat.id, decision.profile.userId, aiConfig);
+      profiles = await resolvePromotionProfiles(store, ctx.api, ctx.chat.id, aiConfig, fetcher);
     } catch (error) {
       console.warn(
-        `[AFRODITA] No se pudo revalidar el perfil en Supabase (${errorName(error)}).`,
+        `[AFRODITA] No se pudieron revalidar perfiles promocionables (${errorName(error)}).`,
       );
       return;
     }
-    if (!isVerified) {
-      await store.removeProfile(ctx.chat.id, decision.profile.userId);
-      return;
-    }
-    let member;
-    try {
-      member = await ctx.api.getChatMember(ctx.chat.id, decision.profile.userId);
-    } catch (error) {
-      console.warn(
-        `[AFRODITA] No se pudo revalidar la membresía del perfil (${errorName(error)}).`,
-      );
-      return;
-    }
-    if (!isActiveMember(member)) {
-      await store.removeProfile(ctx.chat.id, decision.profile.userId);
-      return;
-    }
-    if (!(await reserveAction(store, ctx.chat.id, decision))) return;
-    const currentUser = member.user;
-    const currentName = [currentUser.first_name, currentUser.last_name].filter(Boolean).join(" ");
-    const identity = currentUser.username ? `@${currentUser.username}` : currentName;
-    await ctx.reply(
-      `✨ Creadora verificada y autorizada del grupo: ${identity || decision.profile.displayName}`,
+    const profile = profiles.find(
+      (candidate) => candidate.userId === decision.profile.userId,
+    ) ?? profiles[0];
+    if (!profile) return;
+    await publishProfilePromotion(
+      ctx.api,
+      store,
+      ctx.chat.id,
+      profile,
+      { kind: "activity", userId: profile.userId },
+      (await store.loadGroup(ctx.chat.id)).publications.verified_promotion.history.length,
     );
   }
 }
+
 
 async function setGroupEnabled(ctx: Context, store: AfroditaStore, enabled: boolean): Promise<void> {
   if (!isGroup(ctx) || !ctx.from) {
@@ -343,14 +415,52 @@ async function setGroupEnabled(ctx: Context, store: AfroditaStore, enabled: bool
     return;
   }
   await ctx.reply(enabled
-    ? "Afrodita está activa 💫 Usaré límites conservadores y puedes pausarme con /afrodita_pausar."
+    ? "Afrodita está activa 💫 Usaré límites conservadores y puedes pausarme con /afrodita_pausar. Este grupo debe ser solo para personas adultas (18+)."
     : "Afrodita quedó en pausa; no analizaré mensajes nuevos de este grupo.");
 }
+export interface AfroditaApplicationDependencies {
+  config: AfroditaConfig;
+  bot?: Bot;
+  createBot?: (token: string) => Bot;
+  store?: AfroditaStore;
+  scheduler?: Pick<PublicationScheduler, "start" | "stop"> | null;
+  fetcher?: typeof fetch;
+  shutdownSignals?: EventEmitter;
+}
 
-async function main(): Promise<void> {
-  const config = loadAfroditaConfig();
-  const bot = new Bot(config.botToken);
-  const store = new AfroditaStore(config.dataDirectory);
+export interface AfroditaApplication {
+  bot: Bot;
+  store: AfroditaStore;
+  scheduler: Pick<PublicationScheduler, "start" | "stop"> | undefined;
+  start(): Promise<void>;
+  stop(): Promise<void>;
+}
+
+export function createAfroditaApplication(
+  dependencies: AfroditaApplicationDependencies,
+): AfroditaApplication {
+  const { config } = dependencies;
+  const bot = dependencies.bot ??
+    (dependencies.createBot ?? ((token) => new Bot(token)))(config.botToken);
+  const store = dependencies.store ?? new AfroditaStore(config.dataDirectory);
+  const fetcher = dependencies.fetcher ?? fetch;
+  const scheduler = dependencies.scheduler === null
+    ? undefined
+    : dependencies.scheduler ?? new PublicationScheduler(
+      store,
+      (job) => publishScheduledJob(
+        bot.api,
+        store,
+        job.chatId,
+        job.category,
+        job.slotKey,
+        {
+          supabaseUrl: config.supabaseUrl,
+          supabaseKey: config.supabaseKey,
+        },
+        fetcher,
+      ),
+    );
 
   bot.catch((error) => {
     console.error(
@@ -369,18 +479,66 @@ async function main(): Promise<void> {
       "Soy Afrodita 💫 Una persona administradora debe activarme con /afrodita_activar. " +
         "Luego respondo si me mencionas, contestas uno de mis mensajes o preguntas directamente por catálogos, fotos, servicios o llamadas. " +
         "Puede autorizar un perfil verificado respondiendo a su mensaje con /afrodita_perfil, " +
-        "o retirarlo con /afrodita_ocultar. Mis métricas son agregadas y no guardo el texto de la charla.",
+          "la propia persona puede autorizar o retirar su consentimiento promocional con /afrodita_autorizar_promocion y /afrodita_retirar_promocion, " +
+          "y una persona administradora puede retirar un perfil con /afrodita_ocultar. " +
+          "Usa /menu en el grupo para abrir el panel administrativo. Mis métricas son agregadas y no guardo el texto de la charla.",
+      );
+    });
+    bot.command("menu", async (ctx) => showAdminMenu(ctx, store));
+    bot.command("afrodita_activar", async (ctx) => setGroupEnabled(ctx, store, true));
+    bot.command("afrodita_pausar", async (ctx) => setGroupEnabled(ctx, store, false));
+    bot.command("afrodita_autorizar_promocion", async (ctx) =>
+      setPromotionConsent(ctx, store, {
+        supabaseUrl: config.supabaseUrl,
+        supabaseKey: config.supabaseKey,
+      }, true, fetcher),
     );
-  });
-  bot.command("afrodita_activar", async (ctx) => setGroupEnabled(ctx, store, true));
-  bot.command("afrodita_pausar", async (ctx) => setGroupEnabled(ctx, store, false));
+    bot.command("afrodita_retirar_promocion", async (ctx) =>
+      setPromotionConsent(ctx, store, {
+        supabaseUrl: config.supabaseUrl,
+        supabaseKey: config.supabaseKey,
+      }, false, fetcher),
+    );
   bot.command("afrodita_perfil", async (ctx) =>
     approveProfile(ctx, store, {
       supabaseUrl: config.supabaseUrl,
       supabaseKey: config.supabaseKey,
-    }),
+    }, fetcher),
   );
   bot.command("afrodita_ocultar", async (ctx) => revokeProfile(ctx, store));
+  bot.command("afrodita_verificadas", async (ctx) => {
+    if (!isGroup(ctx)) {
+      await ctx.reply("La lista de verificadas se consulta dentro del grupo.");
+      return;
+    }
+    if (!(await requireGroupAdministrator(ctx, ctx.chat.id))) return;
+    const state = await store.loadGroup(ctx.chat.id);
+    const entries = Object.values(state.authorizedProfiles);
+    if (entries.length === 0) {
+      await ctx.reply("No hay verificadas en la lista de este grupo.");
+      return;
+    }
+    const lines = await Promise.all(
+      entries.map(async (profile) => {
+        const handle = profile.username ? `@${profile.username}` : "(sin username)";
+        let membership = "membresía: desconocida";
+        try {
+          const member = await ctx.api.getChatMember(ctx.chat.id, profile.userId);
+          const active = member.status !== "left" &&
+            member.status !== "kicked" &&
+            (member.status !== "restricted" || member.is_member);
+          membership = active ? "en el grupo" : "fuera del grupo";
+        } catch {
+          // Sin datos de Telegram se conserva «desconocida».
+        }
+        return `• ${handle} — ${profile.displayName} — ${membership}`;
+      }),
+    );
+    await ctx.reply(
+      `Lista de verificadas (${entries.length}):\n${lines.join("\n")}\n\n` +
+        "La lista es la única autorización de AFRODITA; su gestión corresponde solo a la administración.",
+    );
+  });
 
   bot.on("poll", async (ctx) => {
     const poll = ctx.poll;
@@ -389,14 +547,19 @@ async function main(): Promise<void> {
       poll.options.map((option) => ({ voter_count: option.voter_count })),
     );
   });
+  bot.callbackQuery(/^af:/u, async (ctx) =>
+    handleAdminMenuCallback(ctx, store),
+  );
 
   bot.on("message", async (ctx) => {
     if (!isGroup(ctx) || !ctx.message || !ctx.from || ctx.from.is_bot) return;
     const now = Date.now();
+    const rawText = ctx.message.text ?? ctx.message.caption ?? "";
+    if (/^\s*\/[A-Za-z0-9_]+(?:@[A-Za-z0-9_]+)?(?:\s|$)/u.test(rawText)) return;
     const username = bot.botInfo.username;
     const directed = directedMessage(ctx, username, bot.botInfo.id);
     const text = sanitizeIncomingText(
-      ctx.message.text ?? ctx.message.caption ?? "",
+      rawText,
     );
     const commercialInquiry = isCommercialInquiry(text);
     const observation = {
@@ -426,38 +589,47 @@ async function main(): Promise<void> {
       model: config.aiModel,
       supabaseUrl: config.supabaseUrl,
       supabaseKey: config.supabaseKey,
-    });
+    }, fetcher);
   });
 
-  const removeShutdownHandlers = installGracefulShutdown(bot);
-  try {
-    await bot.start({
-      allowed_updates: ["message", "poll"],
-      onStart: (info) => {
-        console.log(`[AFRODITA] Iniciada como @${info.username}; IA externa ${config.aiEndpoint ? "habilitada" : "desactivada"}.`);
-        if (!config.supabaseUrl || !config.supabaseKey) {
-          console.warn(
-            "[AFRODITA] Supabase no está configurado; las recomendaciones dinámicas de verificadas están desactivadas.",
-          );
-        }
-      },
-    });
-  } finally {
-    removeShutdownHandlers();
-  }
+  const removeShutdownHandlers = { current: (): void => undefined };
+  const stop = async (): Promise<void> => {
+    try {
+      scheduler?.stop();
+      await bot.stop();
+    } finally {
+      removeShutdownHandlers.current();
+      removeShutdownHandlers.current = () => undefined;
+    }
+  };
+  const start = async (): Promise<void> => {
+    removeShutdownHandlers.current = installGracefulShutdown(
+      { stop },
+      dependencies.shutdownSignals,
+    );
+    try {
+      scheduler?.start();
+      await bot.start({
+        allowed_updates: ["message", "poll", "callback_query"],
+        onStart: (info) => {
+          console.log(`[AFRODITA] Iniciada como @${info.username}; IA externa ${config.aiEndpoint ? "habilitada" : "desactivada"}.`);
+          if (!config.supabaseUrl || !config.supabaseKey) {
+            console.warn(
+              "[AFRODITA] Supabase no está configurado; las recomendaciones dinámicas de verificadas están desactivadas.",
+            );
+          }
+        },
+      });
+    } finally {
+      scheduler?.stop();
+      removeShutdownHandlers.current();
+      removeShutdownHandlers.current = () => undefined;
+    }
+  };
+
+  return { bot, store, scheduler, start, stop };
 }
 
 function errorName(error: unknown): string {
   return safeErrorType(error);
 }
-
-void main().catch((error: unknown) => {
-  console.error(
-    `[AFRODITA] No se pudo iniciar: ${
-      error instanceof AfroditaConfigError
-        ? error.message
-        : `(${safeErrorSummary(error)})`
-    }.`,
-  );
-  process.exitCode = 1;
-});

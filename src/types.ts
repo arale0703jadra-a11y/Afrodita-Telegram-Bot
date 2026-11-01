@@ -21,6 +21,42 @@ export interface PollTally {
   votes: number[];
 }
 
+export const PUBLICATION_CATEGORIES = [
+  "verified_promotion",
+  "commercial_poll",
+  "seasonal_campaign",
+  "community_reply",
+] as const;
+
+export type PublicationCategory = (typeof PUBLICATION_CATEGORIES)[number];
+
+export interface PublicationSettings {
+  enabled: boolean;
+  scheduledEnabled: boolean;
+  activityEnabled: boolean;
+  scheduleTimes: string[];
+  maxPerDay: number;
+  minIntervalMs: number;
+  utcDay: string;
+  publishedToday: number;
+  lastPublishedAt: number;
+  lastScheduledKey: string;
+  history: Array<{
+    id: string;
+    at: number;
+    status: "reserved" | "published" | "failed" | "unknown";
+    scheduledKey?: string;
+    subjectId?: number;
+    templateId?: string;
+    previousPublishedAt?: number;
+  }>;
+}
+
+export type PublicationSettingsByCategory = Record<
+  PublicationCategory,
+  PublicationSettings
+>;
+
 export const ACTIVITY_KINDS = ["preferencia", "curiosidad", "pregunta"] as const;
 
 export type ActivityKind = (typeof ACTIVITY_KINDS)[number];
@@ -73,6 +109,15 @@ export interface GroupLimitOverrides {
 export interface AfroditaState {
   enabled: boolean;
   activityPaused: boolean;
+  timeZone: string;
+  publications: PublicationSettingsByCategory;
+  promotionConsents: Record<string, number>;
+  recentPromotedUserIds: number[];
+  messagesSincePromotion: number;
+  communityReplyUtcHour: string;
+  communityRepliesThisHour: number;
+  communityReplyLastAt: number;
+  communityReplyUserCooldowns: Record<string, number>;
   messageCount: number;
   messagesSincePoll: number;
   topicCounts: Record<AfroditaTopic, number>;
@@ -134,6 +179,61 @@ export const DEFAULT_AFRODITA_LIMITS: AfroditaLimits = {
   quietPeriodMs: 12 * 60 * 60 * 1000,
 };
 
+export const DEFAULT_PUBLICATION_SETTINGS: PublicationSettingsByCategory = {
+  verified_promotion: {
+    enabled: true,
+    scheduledEnabled: true,
+    activityEnabled: true,
+    scheduleTimes: ["12:00", "20:00"],
+    maxPerDay: 2,
+    minIntervalMs: 4 * 60 * 60 * 1000,
+    utcDay: "",
+    publishedToday: 0,
+    lastPublishedAt: 0,
+    lastScheduledKey: "",
+    history: [],
+  },
+  commercial_poll: {
+    enabled: true,
+    scheduledEnabled: true,
+    activityEnabled: true,
+    scheduleTimes: ["11:00", "16:00", "21:00"],
+    maxPerDay: 3,
+    minIntervalMs: 4 * 60 * 60 * 1000,
+    utcDay: "",
+    publishedToday: 0,
+    lastPublishedAt: 0,
+    lastScheduledKey: "",
+    history: [],
+  },
+  seasonal_campaign: {
+    enabled: true,
+    scheduledEnabled: true,
+    activityEnabled: false,
+    scheduleTimes: ["18:00"],
+    maxPerDay: 1,
+    minIntervalMs: 24 * 60 * 60 * 1000,
+    utcDay: "",
+    publishedToday: 0,
+    lastPublishedAt: 0,
+    lastScheduledKey: "",
+    history: [],
+  },
+  community_reply: {
+    enabled: true,
+    scheduledEnabled: false,
+    activityEnabled: true,
+    scheduleTimes: [],
+    maxPerDay: 24,
+    minIntervalMs: 10 * 60 * 1000,
+    utcDay: "",
+    publishedToday: 0,
+    lastPublishedAt: 0,
+    lastScheduledKey: "",
+    history: [],
+  },
+};
+
 export const DEFAULT_CALENDAR_SLOTS: CalendarSlot[] = [
   { hour: 18, segment: "rotativo" },
 ];
@@ -158,6 +258,15 @@ export function initialAfroditaState(): AfroditaState {
   return {
     enabled: false,
     activityPaused: false,
+    timeZone: "UTC",
+    publications: structuredClone(DEFAULT_PUBLICATION_SETTINGS),
+    promotionConsents: {},
+    recentPromotedUserIds: [],
+    messagesSincePromotion: 0,
+    communityReplyUtcHour: "",
+    communityRepliesThisHour: 0,
+    communityReplyLastAt: 0,
+    communityReplyUserCooldowns: {},
     messageCount: 0,
     messagesSincePoll: 0,
     topicCounts: { ...topicCounts },

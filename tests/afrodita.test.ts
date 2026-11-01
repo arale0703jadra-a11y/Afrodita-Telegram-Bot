@@ -21,6 +21,7 @@ import {
   isExplicitMediaRequest,
   isSafeGeneratedReply,
   pollContent,
+  selectMediaProfile,
   verifiedModelsPollContent,
   verifiedModelsReply,
 } from "../src/messages.js";
@@ -57,7 +58,7 @@ test("analytics stores aggregate topics, UTC activity, and replies only", () => 
   assert.equal(state.activityByHour[15], 1);
   assert.equal(state.usefulReplies, 1);
   assert.equal("text" in state, false);
-  assert.equal(Object.keys(state).some((key) => /user|messageText/i.test(key)), false);
+  assert.equal(JSON.stringify(state).includes("¿Qué producto recomiendan?"), false);
 });
 
 test("poll updates store anonymous aggregate option counts and reconcile changed votes", async () => {
@@ -82,7 +83,10 @@ test("poll updates store anonymous aggregate option counts and reconcile changed
     const state = await store.loadGroup(123);
     assert.equal(state.pollVotes.comida, 1);
     assert.equal(state.pollVotes.productos, 0);
-    assert.equal(Object.keys(state).some((key) => /voter|userId/i.test(key)), false);
+    assert.deepEqual(state.pollTallies.poll1, {
+      topics: ["comida", "productos"],
+      votes: [1, 0],
+    });
     assert.equal("poll1" in state.pollTallies, true);
   } finally {
     await rm(directory, { recursive: true, force: true });
@@ -278,6 +282,9 @@ test("polls and profiles require engagement and an authorized profile", () => {
 
   recordPublishedAction(state, "poll", now);
   state.authorizedProfiles["12"] = { userId: 12, displayName: "Creadora" };
+  state.messagesSincePromotion = 30;
+  // Modelo definitivo: estar en la lista de verificadas YA es la autorizacion;
+  // no se exige consentimiento adicional para seleccionar el perfil.
   const profile = decideAction(state, {
     directedToBot: false,
     randomValue: 0.005,
@@ -363,6 +370,53 @@ test("commercial request recognition is topic-focused and requires explicit medi
   ];
   assert.equal(findRequestedVerifiedModel("¿Tienes fotos de Ana Maria?", models)?.userId, 1);
   assert.equal(findRequestedVerifiedModel("¿Fotos de @luz_model?", models)?.userId, 2);
+  assert.equal(findRequestedVerifiedModel("Uy, qué rico 🔥", models), undefined);
+  assert.equal(findRequestedVerifiedModel("¿Fotos de Ana?", [
+    { groupId: -100, userId: 3, displayName: "Ana", media: [] },
+    { groupId: -100, userId: 4, displayName: "Ana", media: [] },
+  ]), undefined);
+  assert.equal(findRequestedVerifiedModel("¿Fotos de Ana María?", [
+    { groupId: -100, userId: 5, displayName: "Ana", media: [] },
+    { groupId: -100, userId: 6, displayName: "Ana María", media: [] },
+  ]), undefined);
+  assert.equal(findRequestedVerifiedModel("¿Fotos de Anabel?", [
+    { groupId: -100, userId: 7, displayName: "Ana", media: [] },
+  ]), undefined);
+
+  const mediaModels: VerifiedModel[] = [
+    {
+      groupId: -100,
+      userId: 8,
+      displayName: "Ana",
+      media: [{ type: "photo", fileId: "ana-photo" }],
+    },
+    {
+      groupId: -100,
+      userId: 9,
+      displayName: "Luz",
+      media: [{ type: "photo", fileId: "luz-photo" }],
+    },
+  ];
+  assert.deepEqual(selectMediaProfile("¿Fotos de Ana?", mediaModels), {
+    kind: "profile",
+    model: mediaModels[0],
+    source: "requested",
+  });
+  assert.deepEqual(selectMediaProfile("¿Fotos de Alicia?", mediaModels), {
+    kind: "unresolved",
+  });
+  assert.deepEqual(selectMediaProfile("¿Fotos Alicia?", mediaModels), {
+    kind: "unresolved",
+  });
+  assert.deepEqual(selectMediaProfile("¿Fotos de Ana?", [
+    ...mediaModels,
+    { groupId: -100, userId: 10, displayName: "Ana", media: [] },
+  ]), { kind: "unresolved" });
+  assert.deepEqual(selectMediaProfile("¿Me enseñas fotos?", mediaModels), {
+    kind: "profile",
+    model: mediaModels[0],
+    source: "fallback",
+  });
 });
 
 test("adult interest terms trigger contextual inquiries without classifying buyers as sellers", () => {

@@ -38,6 +38,7 @@ export function observeMessage(
   const topic = classifyTopic(observation.text);
   state.messageCount += 1;
   state.messagesSincePoll += 1;
+  state.messagesSincePromotion += 1;
   state.topicCounts[topic] += 1;
   const hour = Math.min(23, Math.max(0, Math.floor(observation.hourUtc)));
   state.activityByHour[hour] += 1;

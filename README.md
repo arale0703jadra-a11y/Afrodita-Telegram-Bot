@@ -14,7 +14,9 @@ AFRODITA falla de forma cerrada para aprobar o presentar perfiles cuando no pued
 
 ## Estado y vigencia
 
-La RPC sigue el estado persistido de ZEUS: una fila se incluye cuando `verified = true` y `revoked_at IS NULL`. `valid_until` no se utiliza para revocar por cuenta propia; ZEUS decide si debe persistir una revocación automática según la preferencia del grupo. Una usuaria vencida solo deja de aparecer después de que ZEUS confirme esa revocación en Supabase.
+La definición local vigente de la RPC es la migración `CERBERO/supabase/migrations/013_afrodita_verified_catalog_validity.sql` (sustituye a la 012): una fila se publica para el grupo consultado cuando `verified = true`, `revoked_at IS NULL` y `valid_until` es `NULL` o una fecha futura finita. Si el servidor solo aplicara la 012, el filtro de vigencia no existiría y una usuaria vencida dejaría de aparecer solo cuando ZEUS persistiera la revocación (`verified = false` con `revoked_at`, vía migración 015) según la preferencia del grupo. En cualquier caso AFRODITA nunca evalúa `valid_until` en el cliente: sigue el estado que el servidor decida persistir. `verification_method`, `permissions` y los identificadores multimedia no se publican en este catálogo.
+
+Cada fila pertenece a un único `group_id` y el cliente descarta cualquier fila que no coincida con el grupo consultado; las autorizaciones de perfil y los consentimientos promocionales se guardan localmente por grupo.
 
 La aprobación de perfiles consulta esta misma fuente Supabase; el JSON local de ZEUS ya no se usa para autorizar perfiles. El archivo `src/zeus-verification.ts` se conserva como lector legado independiente, pero no forma parte del flujo del bot.
 

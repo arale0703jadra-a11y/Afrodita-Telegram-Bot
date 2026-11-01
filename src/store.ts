@@ -15,7 +15,10 @@ import type {
   AfroditaState,
   AfroditaTopic,
   AuthorizedProfile,
+  PublicationCategory,
+  PublicationSettings,
 } from "./types.js";
+import { PUBLICATION_CATEGORIES } from "./types.js";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -25,6 +28,88 @@ function finiteCount(value: unknown): number {
   return typeof value === "number" && Number.isFinite(value) && value >= 0
     ? Math.min(Number.MAX_SAFE_INTEGER, Math.floor(value))
     : 0;
+}
+
+function validTimeZone(value: unknown): string {
+  if (typeof value !== "string" || value.length > 64) return "UTC";
+  try {
+    new Intl.DateTimeFormat("en", { timeZone: value });
+    return value;
+  } catch {
+    return "UTC";
+  }
+}
+
+function normalizePublicationSettings(
+  value: unknown,
+  fallback: PublicationSettings,
+): PublicationSettings {
+  if (!isRecord(value)) return structuredClone(fallback);
+  const history = Array.isArray(value.history)
+    ? value.history.filter((entry): entry is Record<string, unknown> =>
+        isRecord(entry) &&
+        typeof entry.id === "string" &&
+        entry.id.length <= 100 &&
+        typeof entry.at === "number" &&
+        Number.isFinite(entry.at) &&
+        ["reserved", "published", "failed", "unknown"].includes(String(entry.status)),
+      ).slice(-60).map((entry) => ({
+        id: entry.id as string,
+        at: entry.at as number,
+        status: entry.status as PublicationSettings["history"][number]["status"],
+        ...(typeof entry.scheduledKey === "string"
+          ? { scheduledKey: entry.scheduledKey.slice(0, 100) }
+          : {}),
+        ...(typeof entry.subjectId === "number" &&
+          Number.isSafeInteger(entry.subjectId)
+          ? { subjectId: entry.subjectId }
+          : {}),
+        ...(typeof entry.templateId === "string"
+          ? { templateId: entry.templateId.slice(0, 80) }
+          : {}),
+        ...(typeof entry.previousPublishedAt === "number" &&
+          Number.isFinite(entry.previousPublishedAt)
+          ? { previousPublishedAt: entry.previousPublishedAt }
+          : {}),
+      }))
+    : [];
+  const scheduleTimes = Array.isArray(value.scheduleTimes)
+    ? value.scheduleTimes.filter(
+        (time): time is string =>
+          typeof time === "string" && /^([01]\d|2[0-3]):[0-5]\d$/u.test(time),
+      ).slice(0, 8)
+    : [...fallback.scheduleTimes];
+  return {
+    enabled: typeof value.enabled === "boolean" ? value.enabled : fallback.enabled,
+    scheduledEnabled: typeof value.scheduledEnabled === "boolean"
+      ? value.scheduledEnabled
+      : fallback.scheduledEnabled,
+    activityEnabled: typeof value.activityEnabled === "boolean"
+      ? value.activityEnabled
+      : fallback.activityEnabled,
+    scheduleTimes,
+    maxPerDay: typeof value.maxPerDay === "number" &&
+      Number.isSafeInteger(value.maxPerDay) &&
+      value.maxPerDay >= 1 &&
+      value.maxPerDay <= 24
+      ? value.maxPerDay
+      : fallback.maxPerDay,
+    minIntervalMs: typeof value.minIntervalMs === "number" &&
+      Number.isSafeInteger(value.minIntervalMs) &&
+      value.minIntervalMs >= 60_000 &&
+      value.minIntervalMs <= 7 * 24 * 60 * 60 * 1000
+      ? value.minIntervalMs
+      : fallback.minIntervalMs,
+    utcDay: typeof value.utcDay === "string" && /^\d{4}-\d{2}-\d{2}$/u.test(value.utcDay)
+      ? value.utcDay
+      : "",
+    publishedToday: finiteCount(value.publishedToday),
+    lastPublishedAt: finiteCount(value.lastPublishedAt),
+    lastScheduledKey: typeof value.lastScheduledKey === "string"
+      ? value.lastScheduledKey.slice(0, 100)
+      : "",
+    history,
+  };
 }
 
 function isSafePollId(value: string): boolean {
@@ -47,6 +132,18 @@ function normalizeState(value: unknown): AfroditaState {
   const rawVotes = isRecord(value.pollVotes) ? value.pollVotes : {};
   const rawTallies = isRecord(value.pollTallies) ? value.pollTallies : {};
   const rawProfiles = isRecord(value.authorizedProfiles) ? value.authorizedProfiles : {};
+  const rawPublications = isRecord(value.publications) ? value.publications : {};
+  const rawConsents = isRecord(value.promotionConsents) ? value.promotionConsents : {};
+  const initialPublications = initial.publications;
+  const publications = Object.fromEntries(
+    PUBLICATION_CATEGORIES.map((category) => [
+      category,
+      normalizePublicationSettings(
+        rawPublications[category],
+        initialPublications[category],
+      ),
+    ]),
+  ) as AfroditaState["publications"];
   const topics = Object.keys(initial.topicCounts) as AfroditaTopic[];
   const topicCounts = { ...initial.topicCounts };
   const replyTopicCounts = { ...initial.replyTopicCounts };
@@ -99,10 +196,48 @@ function normalizeState(value: unknown): AfroditaState {
         : {}),
     };
   }
+  const promotionConsents: Record<string, number> = {};
+  for (const [key, grantedAt] of Object.entries(rawConsents)) {
+    if (
+      /^[1-9]\d{0,15}$/u.test(key) &&
+      Number.isSafeInteger(Number(key)) &&
+      typeof grantedAt === "number" &&
+      Number.isFinite(grantedAt) &&
+      grantedAt > 0
+    ) {
+      promotionConsents[key] = grantedAt;
+    }
+  }
+  const rawCooldowns = isRecord(value.communityReplyUserCooldowns)
+    ? value.communityReplyUserCooldowns
+    : {};
+  const communityReplyUserCooldowns: Record<string, number> = {};
+  for (const [key, until] of Object.entries(rawCooldowns).slice(-200)) {
+    if (/^[1-9]\d{0,15}$/u.test(key) && Number.isSafeInteger(Number(key))) {
+      communityReplyUserCooldowns[key] = finiteCount(until);
+    }
+  }
 
   return {
     ...initial,
     enabled: value.enabled === true,
+    timeZone: validTimeZone(value.timeZone),
+    publications,
+    promotionConsents,
+    recentPromotedUserIds: Array.isArray(value.recentPromotedUserIds)
+      ? value.recentPromotedUserIds.filter(
+          (id): id is number => typeof id === "number" &&
+            Number.isSafeInteger(id) && id > 0,
+        ).slice(-40)
+      : [],
+    messagesSincePromotion: finiteCount(value.messagesSincePromotion),
+    communityReplyUtcHour: typeof value.communityReplyUtcHour === "string" &&
+      /^\d{4}-\d{2}-\d{2}T\d{2}$/u.test(value.communityReplyUtcHour)
+      ? value.communityReplyUtcHour
+      : "",
+    communityRepliesThisHour: finiteCount(value.communityRepliesThisHour),
+    communityReplyLastAt: finiteCount(value.communityReplyLastAt),
+    communityReplyUserCooldowns,
     messageCount: finiteCount(value.messageCount),
     messagesSincePoll: finiteCount(value.messagesSincePoll),
     topicCounts,
@@ -236,6 +371,59 @@ export class AfroditaStore {
     });
   }
 
+  async listGroupIds(): Promise<number[]> {
+    let entries: string[];
+    try {
+      entries = await readdir(this.directory);
+    } catch (error) {
+      if (isNodeError(error) && error.code === "ENOENT") return [];
+      throw error;
+    }
+    return entries.flatMap((filename) => {
+      const match = /^(-?\d+)\.json$/u.exec(filename);
+      if (!match) return [];
+      const chatId = Number(match[1]);
+      return Number.isSafeInteger(chatId) && chatId !== 0 ? [chatId] : [];
+    });
+  }
+
+  async setTimeZone(chatId: number, timeZone: string): Promise<void> {
+    try {
+      new Intl.DateTimeFormat("en", { timeZone });
+    } catch {
+      throw new Error("AFRODITA_TIME_ZONE_INVALID");
+    }
+    await this.updateGroup(chatId, (state) => {
+      state.timeZone = timeZone;
+    });
+  }
+
+  async updatePublicationSettings(
+    chatId: number,
+    category: PublicationCategory,
+    update: (settings: PublicationSettings) => void,
+  ): Promise<void> {
+    await this.updateGroup(chatId, (state) => {
+      update(state.publications[category]);
+    });
+  }
+
+  async authorizePromotion(chatId: number, userId: number, grantedAt = Date.now()): Promise<void> {
+    if (!Number.isSafeInteger(userId) || userId <= 0 ||
+      !Number.isFinite(grantedAt) || grantedAt <= 0) {
+      throw new Error("AFRODITA_PROMOTION_CONSENT_INVALID");
+    }
+    await this.updateGroup(chatId, (state) => {
+      state.promotionConsents[String(userId)] = grantedAt;
+    });
+  }
+
+  async revokePromotion(chatId: number, userId: number): Promise<void> {
+    await this.updateGroup(chatId, (state) => {
+      delete state.promotionConsents[String(userId)];
+    });
+  }
+
   async registerPoll(
     chatId: number,
     pollId: string,
@@ -284,6 +472,7 @@ export class AfroditaStore {
   async removeProfile(chatId: number, userId: number): Promise<void> {
     await this.updateGroup(chatId, (state) => {
       delete state.authorizedProfiles[String(userId)];
+      delete state.promotionConsents[String(userId)];
     });
   }
 

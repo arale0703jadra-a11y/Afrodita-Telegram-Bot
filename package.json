@@ -3,11 +3,11 @@
   "version": "1.0.0",
   "private": true,
   "description": "Bot social para descubrir productos y servicios locales en Telegram",
-  "main": "dist/bot.js",
+  "main": "dist/main.js",
   "scripts": {
-    "dev": "tsx watch src/bot.ts",
+    "dev": "tsx watch src/main.ts",
     "build": "tsc",
-    "start": "node dist/bot.js",
+    "start": "node dist/main.js",
     "test": "node --import tsx --test tests/*.test.ts",
     "typecheck": "tsc --noEmit -p tsconfig.tests.json"
   },
