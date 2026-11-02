@@ -55,40 +55,94 @@ export function pollContent(
   options: string[];
   topics: AfroditaTopic[];
 } {
-  const topics: AfroditaTopic[] = [
-    "productos",
-    "servicios",
-    "belleza",
-    "moda",
-    "comida",
-    "bienestar",
-  ];
-  const labels: Record<(typeof topics)[number], string> = {
-    productos: "Productos",
-    servicios: "Servicios",
-    belleza: "Belleza y cuidado",
-    moda: "Moda",
-    comida: "Comida",
-    bienestar: "Bienestar",
-    general: "Recomendación general",
-  };
-  const ordered = [
-    ...(topic === "general" ? [] : [topic]),
-    ...topics.filter((candidate) => candidate !== topic),
-  ].slice(0, 4);
-  const questions = [
-    "¿Qué tipo de recomendación o negocio local les interesa descubrir?",
-    "Si pudieran conocer un emprendimiento local hoy, ¿de qué sería?",
-    "¿Qué recomendación útil les gustaría encontrar en esta comunidad?",
-  ];
+  const bank = [
+    {
+      question: "Si esta semana pudieran descubrir una recomendación local útil, ¿cuál elegirían?",
+      options: [
+        ["Un producto práctico para casa", "productos"],
+        ["Un lugar rico para comer", "comida"],
+        ["Un servicio que ahorre tiempo", "servicios"],
+        ["Una idea sencilla para cuidarme", "bienestar"],
+      ],
+    },
+    {
+      question: "¿Qué dato les ayuda más antes de probar algo recomendado por la comunidad?",
+      options: [
+        ["Opiniones de quienes ya lo probaron", "general"],
+        ["Qué problema o necesidad resuelve", "productos"],
+        ["Cómo es la atención y la reserva", "servicios"],
+        ["Precio y opciones disponibles", "productos"],
+      ],
+    },
+    {
+      question: "¿Qué plan local les vendría mejor para una tarde libre?",
+      options: [
+        ["Probar una cafetería o comida nueva", "comida"],
+        ["Visitar una feria o tienda del barrio", "productos"],
+        ["Hacer una actividad para desconectar", "bienestar"],
+        ["Conocer un espacio de belleza o cuidado", "belleza"],
+      ],
+    },
+    {
+      question: "Al elegir un emprendimiento local, ¿qué les hace confiar más?",
+      options: [
+        ["Recomendaciones claras y honestas", "general"],
+        ["Ver ejemplos reales del producto", "productos"],
+        ["Saber quién presta el servicio", "servicios"],
+        ["Una respuesta amable y rápida", "servicios"],
+      ],
+    },
+    {
+      question: "¿Qué pequeño descubrimiento mejoraría su rutina diaria?",
+      options: [
+        ["Un accesorio que sí resulte práctico", "moda"],
+        ["Una comida rica cerca de casa", "comida"],
+        ["Un consejo útil para el cabello o la piel", "belleza"],
+        ["Una actividad para recargar energía", "bienestar"],
+      ],
+    },
+    {
+      question: "¿Qué recomendarían primero a alguien nuevo en el barrio?",
+      options: [
+        ["Su sitio favorito para comer", "comida"],
+        ["Una tienda con buenos hallazgos", "productos"],
+        ["Un servicio de confianza", "servicios"],
+        ["Un plan tranquilo para el fin de semana", "bienestar"],
+      ],
+    },
+    {
+      question: "¿Qué hace que una recomendación de belleza sea realmente útil?",
+      options: [
+        ["Que explique para quién puede servir", "belleza"],
+        ["Que cuente cómo se usa", "productos"],
+        ["Que comparta una experiencia sincera", "general"],
+        ["Que aclare el tiempo y el tipo de atención", "servicios"],
+      ],
+    },
+    {
+      question: "Si pudieran apoyar un negocio local hoy, ¿qué les gustaría encontrar?",
+      options: [
+        ["Algo artesanal o hecho en la zona", "productos"],
+        ["Un menú con algo distinto", "comida"],
+        ["Un servicio profesional recomendado", "servicios"],
+        ["Ropa o accesorios con estilo propio", "moda"],
+      ],
+    },
+  ] as const;
   const questionIndex = Math.min(
-    questions.length - 1,
-    Math.max(0, Math.floor(randomValue * questions.length)),
+    bank.length - 1,
+    Math.max(0, Math.floor(randomValue * bank.length)),
   );
+  const selected = bank[questionIndex]!;
+  const options = [...selected.options];
+  if (topic !== "general") {
+    const preferredIndex = options.findIndex(([, optionTopic]) => optionTopic === topic);
+    if (preferredIndex > 0) options.unshift(...options.splice(preferredIndex, 1));
+  }
   return {
-    question: questions[questionIndex]!,
-    options: ordered.map((candidate) => labels[candidate as keyof typeof labels]),
-    topics: ordered,
+    question: selected.question,
+    options: options.map(([label]) => label),
+    topics: options.map(([, optionTopic]) => optionTopic),
   };
 }
 
@@ -96,8 +150,20 @@ export function verifiedModelsPollContent(
   topic: AfroditaTopic,
   models: readonly VerifiedModel[],
   randomValue = Math.random(),
-): { question: string; options: string[]; topics: AfroditaTopic[] } {
-  if (models.length === 0) return pollContent(topic, randomValue);
+): {
+  question: string;
+  options: string[];
+  topics: AfroditaTopic[];
+  subjectUserIds: number[];
+  mentionedUserIds: number[];
+} {
+  if (models.length === 0) {
+    return {
+      ...pollContent(topic, randomValue),
+      subjectUserIds: [],
+      mentionedUserIds: [],
+    };
+  }
   const uniqueModels = models.filter(
     (model, index, all) =>
       all.findIndex((candidate) => candidate.userId === model.userId) === index,
@@ -123,6 +189,11 @@ export function verifiedModelsPollContent(
     topics: options.map((_, index) =>
       index < options.length - 1 ? "servicios" : "general",
     ),
+    subjectUserIds: uniqueModels.slice(0, 9).map((model) => model.userId),
+    mentionedUserIds: uniqueModels
+      .slice(0, 9)
+      .filter((model) => model.username && /^[A-Za-z0-9_]{1,32}$/u.test(model.username))
+      .map((model) => model.userId),
   };
 }
 
@@ -149,6 +220,7 @@ export function verifiedModelsReply(
   models: readonly VerifiedModel[],
   inquiry = "",
   randomValue = Math.random(),
+  options: { allowAdultContent?: boolean } = {},
 ): string {
   const names = models
     .slice(0, 3)
@@ -165,6 +237,9 @@ export function verifiedModelsReply(
   const remaining = models.length > names.length
     ? ` y ${models.length - names.length} más`
     : "";
+  if (!options.allowAdultContent) {
+    return `Estos perfiles tienen información pública disponible: ${list}${remaining}. Consulta únicamente lo que cada persona haya decidido compartir en su perfil.`;
+  }
   const normalized = normalizeForMatching(inquiry);
   if (/\bsola\b/u.test(normalized)) {
     return `Puedo confirmar qué perfiles están verificados, no la disponibilidad personal de nadie 💫. ${list}${remaining} tienen perfil activo; revisa únicamente los canales o la información que cada creadora haya publicado para consultas.`;
@@ -198,12 +273,14 @@ export function verifiedModelsReply(
       `Uy, qué ganas de contarles 😏 Entre las verificadas de hoy están ${list}${remaining}. Curvas, actitud y contenido que sí vale la pena descubrir en sus perfiles públicos.`,
     ],
   };
-  const options = responses[intent];
+  const choices = !options.allowAdultContent && intent === "general"
+    ? responses.general.slice(0, 3)
+    : responses[intent];
   const index = Math.min(
-    options.length - 1,
-    Math.max(0, Math.floor(randomValue * options.length)),
+    choices.length - 1,
+    Math.max(0, Math.floor(randomValue * choices.length)),
   );
-  return options[index]!;
+  return choices[index]!;
 }
 
 export function findRequestedVerifiedModel(
@@ -357,6 +434,12 @@ function plainProfileName(value: string): string {
   return value.replace(/[\r\n\0]/gu, " ").replace(/\s+/gu, " ").trim().slice(0, 60);
 }
 
+export function isAdultGeneratedReply(value: string): boolean {
+  const normalized = normalizeForMatching(value);
+  return /\b(?:sexo|sexual|fantasia|posiciones?|cuerpazo|culo|tetas?|nalgas?|senos?|vagina|sexting|desnudas?|picante|caliente|atrevid[oa]s?|sensual|curvas|coqueta|coqueto|erotico|erotica|contenido personalizado|fotos atrevidas|video jugueton)\b/u
+    .test(normalized);
+}
+
 export function isSafeGeneratedReply(value: string): boolean {
   const reply = value.trim();
   if (
@@ -379,34 +462,28 @@ export interface EntertainmentPoll {
 }
 
 export const ADULT_POLL_BANK: EntertainmentPoll[] = [
-  { question: "A ver, ¿qué prefieren esta noche? 😏", options: ["Videollamada", "Sexting", "Vídeo personalizado"] },
-  { question: "Si les llega un mensaje picante, ¿qué prefieren? 🔥", options: ["Fotos atrevidas", "Un video juguetón", "Una llamada sorpresa"] },
-  { question: "¿Qué modo de conquista digital les gusta más? 😈", options: ["Mensajes coquetos", "Videollamada a deshoras", "Contenido personalizado"] },
-  { question: "¿Qué prefieren en una noche especial? 💋", options: ["Algo romántico", "Algo atrevido", "Algo espontáneo"] },
-  { question: "Anoche, ¿a qué le dieron prioridad? 😏", options: ["Conversación caliente", "Videollamada", "Enviar algo picante"] },
-  { question: "¿Qué les excita más: oír o ver? 🔥", options: ["Escuchar descripciones", "Ver contenido", "Los dos, obvio"] },
-  { question: "¿Qué parte del cuerpo les vuelve locos? 😈", options: ["Culo", "Tetas", "Caderas", "Piernas", "Pies"] },
-  { question: "¿Qué les llama más la atención de una mujer? 🔥", options: ["Unas buenas nalgas", "Unas tetas bonitas", "Unas piernas largas", "Una cintura de avispa"] },
-  { question: "A ver sin filtros, ¿qué cuerpo les gusta más? 😏", options: ["Cuerpazo curvilíneo", "Deportiva y marcada", "Suave y sensual", "Redondeada y perfecta"] },
-  { question: "¿Cuál es el mejor regalo visual? 💋", options: ["Un trasero espectacular", "Unos pechos naturales", "Unas curvas de película", "Todo el paquete"] },
-  { question: "¿Qué detalle físico las voltea en segundos? 🔥", options: ["Caderas", "Nalgas", "Piernas", "Boca", "Mirada sensual"] },
-  { question: "¿De qué hablan primero cuando comentan a una mujer? 😈", options: ["Su cuerpazo", "Su actitud atrevida", "Su sonrisa coqueta", "Su forma de moverse"] },
-  { question: "Vamos con una pregunta más atrevida… ¿qué posición prefieren? 😈", options: ["Misionero", "Vaquera", "De lado", "Desde atrás"] },
-  { question: "¿Cuál es su posición favorita para una noche larga? 🔥", options: ["De espaldas", "Encima", "Sentada", "De pie"] },
-  { question: "Clásico o aventurero: ¿qué posición eligen? 😏", options: ["Misionero bien hecho", "Vaquera intensa", "Desde atrás", "69"] },
-  { question: "¿Qué posición les hace correr más rápido? 💋", options: ["De lado", "Cowgirl", "Perrito", "Rodeando"] },
-  { question: "Pregunta picante del día: ¿misionero o contra la pared? 😈", options: ["Misionero", "Contra la pared", "Las dos"] },
-  { question: "¿Qué posición les gusta fingir que no conocen? 🔥", options: ["La de la cuchara", "Caballito", "De pie contra la pared", "Japonesa"] },
-  { question: "¿Qué contenido les gusta más? 💋", options: ["Fotos atrevidas", "Vídeos", "Videollamadas", "Contenido personalizado"] },
-  { question: "¿Qué prefieren recibir de una creadora? 😏", options: ["Un pack", "Un video personalizado", "Una videollamada", "Solo charla coqueta"] },
-  { question: "¿Cuál es el mejor contenido para pasar la noche? 🔥", options: ["Fotos sensuales", "Videos íntimos", "Llamada en vivo", "Audios picantes"] },
-  { question: "Si pudieran pedir algo personalizado, ¿qué sería? 😈", options: ["Un video con su nombre", "Fotos con pose especial", "Un striptease virtual", "Una fantasía narrada"] },
-  { question: "¿Qué les parece más íntimo? 💋", options: ["Videollamada", "Sexting", "Contenido grabado solo para ellos"] },
-  { question: "¿Son de mensajería coqueta o de llamadas a deshoras? 😏", options: ["Mensajes todo el día", "Videollamadas de madrugada", "Las dos, sin vergüenza"] },
-  { question: "¿Qué les gusta más de una noche picante? 🔥", options: ["La tensión", "Las sorpresas", "Que manden contenido", "Todo"] },
-  { question: "A ver, ¿a qué hora se ponen más coquetas? 😈", options: ["Madrugada", "Tarde", "Noche", "Siempre"] },
-  { question: "¿Qué prefieren: que las conquisten o conquistar? 💋", options: ["Que las conquisten", "Conquistar", "Jugar a medias"] },
-  { question: "¿Les gusta mandar fotos picantes o recibir? 😏", options: ["Mandar", "Recibir", "Intercambiar"] },
+  { question: "En un coqueteo a distancia, ¿qué les resulta más excitante?", options: ["Mensajes sugerentes", "Audios con voz sensual", "Videollamada consensuada", "Una foto insinuante"] },
+  { question: "¿Qué ritmo prefieren para una conversación subida de tono?", options: ["Insinuaciones poco a poco", "Ir al grano con respeto", "Bromas y doble sentido", "Que la otra persona marque el ritmo"] },
+  { question: "¿Qué ambiente les pone más en modo cita íntima?", options: ["Luz tenue y música", "Una charla larga", "Un plan espontáneo", "Una cena tranquila"] },
+  { question: "Al compartir contenido íntimo, ¿qué les parece más importante?", options: ["Consentimiento claro", "Privacidad", "Confianza mutua", "Poder decir que no"] },
+  { question: "¿Qué tipo de mensaje coqueto les saca una sonrisa?", options: ["Un cumplido ingenioso", "Una invitación directa", "Un juego de preguntas", "Una nota de voz"] },
+  { question: "¿Qué les atrae más en un encuentro entre adultos?", options: ["La complicidad", "La comunicación", "La confianza", "La espontaneidad"] },
+  { question: "¿Qué prefieren para empezar una noche de pasión?", options: ["Besos y caricias", "Una conversación atrevida", "Un baile lento", "Dejar que fluya con acuerdo"] },
+  { question: "Si hablan de fantasías, ¿qué tono prefieren?", options: ["Romántico", "Juguetón", "Directo", "Con humor"] },
+  { question: "¿Qué detalle vuelve más sensual una videollamada consentida?", options: ["Una buena conversación", "Miradas y sonrisas", "Un ambiente cuidado", "Sentirse en confianza"] },
+  { question: "¿Qué tipo de contenido adulto les despierta más curiosidad?", options: ["Relato erótico", "Audio sugerente", "Vídeo de baile sensual", "Fotografía artística"] },
+  { question: "En una experiencia íntima, ¿qué disfrutan más?", options: ["Tomarse el tiempo", "Explorar algo nuevo", "Hablar de lo que gusta", "Reírse y relajarse"] },
+  { question: "¿Qué estilo de seducción les convence más?", options: ["Seguro y directo", "Tierno y atento", "Juguetón y pícaro", "Misterioso y sutil"] },
+  { question: "Para una noche especial entre adultos, ¿qué plan elegirían?", options: ["Cena y conversación", "Música y baile", "Un juego para dos", "Una sorpresa acordada"] },
+  { question: "¿Qué postura clásica prefieren para empezar, siempre con comodidad?", options: ["Misionero", "De lado", "Vaquera", "Ir cambiando según el momento"] },
+  { question: "¿Cómo prefieren marcar sus límites en una cita íntima?", options: ["Conversarlo antes", "Ir preguntando durante", "Usar una palabra acordada", "Cualquiera, si hay comunicación"] },
+  { question: "¿Qué les parece más atractivo en una persona adulta?", options: ["Seguridad", "Sentido del humor", "Escucha y atención", "Confianza al comunicar"] },
+  { question: "¿Qué formato de charla adulta prefieren a distancia?", options: ["Mensajes de texto", "Notas de voz", "Llamada privada", "Videollamada acordada"] },
+  { question: "¿Qué hace que una fantasía compartida sea agradable para ambas personas?", options: ["Hablarlo con honestidad", "Acordar límites", "Respetar cualquier cambio de opinión", "Tener confianza"] },
+  { question: "¿Qué les parece más seductor en una cita entre adultos?", options: ["Un cumplido sincero", "Una mirada cómplice", "Una invitación con confianza", "Una sorpresa conversada"] },
+  { question: "¿Cómo prefieren expresar que algo les gusta?", options: ["Decirlo directamente", "Guiar con suavidad", "Preguntar y escuchar", "Compartirlo después"] },
+  { question: "¿Qué plan les parece más tentador para una noche de pareja?", options: ["Baile lento en casa", "Un masaje acordado", "Una película y caricias", "Probar un juego de preguntas"] },
+  { question: "¿Qué detalle mejora más una conversación íntima?", options: ["Escucha sin juzgar", "Humor compartido", "Interés mutuo", "Respeto por los límites"] },
 ];
 
 function entertainmentSaltIndex(salt: string): number {
@@ -424,7 +501,7 @@ function entertainmentSaltIndex(salt: string): number {
 export function adultPollContent(
   randomValue = Math.random(),
   salt = "",
-): { question: string; options: string[]; topics: AfroditaTopic[] } {
+): { question: string; options: string[]; topics: AfroditaTopic[]; adult: true } {
   const pool = ADULT_POLL_BANK;
   const offset = salt ? entertainmentSaltIndex(salt) % pool.length : 0;
   const base = Math.min(pool.length - 1, Math.max(0, Math.floor(randomValue * pool.length)));
@@ -433,6 +510,7 @@ export function adultPollContent(
     question: poll.question,
     options: poll.options,
     topics: poll.options.map(() => "general"),
+    adult: true,
   };
 }
 
@@ -444,8 +522,10 @@ export function entertainmentPollContent(
   topic: AfroditaTopic,
   randomValue = Math.random(),
   salt = "",
-): { question: string; options: string[]; topics: AfroditaTopic[] } {
+  allowAdultContent = false,
+): { question: string; options: string[]; topics: AfroditaTopic[]; adult?: true } {
   if (randomValue < 0.5) return pollContent(topic, randomValue * 2);
+  if (!allowAdultContent) return pollContent(topic, (randomValue - 0.5) * 2);
   return adultPollContent((randomValue - 0.5) * 2, salt);
 }
 
@@ -532,7 +612,8 @@ export function saltedRandomValue(randomValue: number, salt: string): number {
 export function entertainmentLineReply(
   randomValue = Math.random(),
   salt = "",
+  allowAdultContent = false,
 ): string {
-  if (randomValue < 0.5) return catalogReply("general", randomValue * 2);
+  if (!allowAdultContent || randomValue < 0.5) return catalogReply("general", randomValue * 2);
   return boldFlirtReply((randomValue - 0.5) * 2, salt);
 }

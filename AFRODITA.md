@@ -21,10 +21,12 @@ logs.
 ## Comandos y panel
 
 - `/start` y `/afrodita` muestran información de uso.
-- `/menu` abre el panel inline dentro del grupo y solo está disponible para
-  administradores del grupo. Cada callback vuelve a comprobar ese permiso.
-- El panel permite pausar/reanudar AFRODITA, activar categorías, cambiar
-  horarios, intervalo mínimo, cuota de encuestas y zona horaria.
+- `/menu` informa que la administración se centralizó en el panel privado de
+  ZEUS (sección 🌸 AFRODITA); el panel inline dentro del grupo fue retirado y
+  sus botones ya no aplican cambios.
+- El panel de ZEUS permite ver resumen, publicaciones, encuestas, menciones,
+  grupos, programación e historial, y pausar/reanudar AFRODITA, activar
+  categorías y cambiar horarios con confirmación y autorización de propiedad.
 - `/afrodita_activar` y `/afrodita_pausar` cambian el estado general del grupo
   y requieren permisos de administración.
 - `/afrodita_perfil`, como respuesta al mensaje de una persona, autoriza un
@@ -63,6 +65,13 @@ El estado por grupo se guarda separadamente de ZEUS en `data/afrodita/<chatId>.j
 Para consultar el catálogo compartido, configura `AFRODITA_SUPABASE_URL` y `AFRODITA_SUPABASE_KEY` con una clave de solo lectura protegida por RLS; nunca uses una clave `service_role`. El código consulta la RPC `get_afrodita_verified_catalog` por grupo, limita la respuesta a 500 perfiles y mantiene una caché de 30 segundos. La verificación para otorgar autorización fuerza una consulta nueva. Sin estas variables, las funciones que dependen del catálogo fallan de forma segura.
 
 El catálogo que AFRODITA consume aporta ID, nombre público y username; el código no lee ni envía identificadores multimedia. Estar verificada no concede por sí solo autorización para promociones ni reemplaza el consentimiento expreso de la persona.
+
+Con las mismas variables, AFRODITA también ejecuta la integración con ZEUS:
+publica una instantánea de estado por grupo en `afrodita_group_state`, registra
+eventos de publicación y encuesta en `afrodita_events` y aplica las órdenes
+encoladas por el panel de ZEUS en `afrodita_commands` (pausar, reanudar y
+ajustes de categoría) cada minuto. Sin estas variables la integración queda
+inactiva y AFRODITA sigue operando de forma autónoma con su estado local.
 
 ## Railway
 

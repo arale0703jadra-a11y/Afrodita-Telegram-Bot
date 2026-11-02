@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { recordPublishedAction } from "./decision.js";
 import type { AfroditaStore } from "./store.js";
 import type { PublicationCategory } from "./types.js";
 import { localDateTime } from "./time.js";
@@ -182,6 +183,7 @@ export async function finalizePublication(
       if (reservation.category === "community_reply") {
         state.communityReplyLastAt = now;
         if (reservation.userId !== undefined) {
+          recordPublishedAction(state, "reply", now);
           state.communityReplyUserCooldowns[String(reservation.userId)] =
             now + 2 * 60 * 60 * 1000;
         }

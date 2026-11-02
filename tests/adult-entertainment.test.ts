@@ -41,7 +41,10 @@ function model(
 
 test("encuestas generales adultas: disponibles sin verificación y con variedad", () => {
   assert.ok(ADULT_POLL_BANK.length >= 20);
-  const content = entertainmentPollContent("general", 0.9, "2026-10-31");
+  const safeContent = entertainmentPollContent("general", 0.9, "2026-10-31");
+  assert.equal(safeContent.adult, undefined, "sin confirmación el selector nunca entrega el banco adulto");
+  const content = entertainmentPollContent("general", 0.9, "2026-10-31", true);
+  assert.equal(content.adult, true);
   assert.ok(content.question.length > 0);
   assert.equal(content.options.length, content.topics.length);
   assert.ok(content.options.length >= 2);
@@ -109,6 +112,7 @@ test("el catálogo fallido no bloquea el entretenimiento general", async () => {
     ),
   );
   const poll = entertainmentPollContent("general", 0.9, "slot");
+  assert.equal(poll.adult, undefined);
   assert.ok(poll.question.length > 0);
 });
 
@@ -159,7 +163,7 @@ test("variedad: distintos slots producen distintas encuestas y líneas", () => {
   assert.equal(entertainmentLineReply(0), catalogReply("general", 0));
   const lines = new Set<string>();
   for (let index = 0; index < 10; index += 1) {
-    lines.add(entertainmentLineReply(0.9, `line-${index}`));
+    lines.add(entertainmentLineReply(0.9, `line-${index}`, true));
   }
   assert.ok(lines.size >= 2);
 });

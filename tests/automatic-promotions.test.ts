@@ -5,7 +5,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Api } from "grammy";
 import {
-  getEligiblePromotionProfiles,
   publishProfilePromotion,
   resolvePromotionProfiles,
 } from "../src/publishers.js";
@@ -25,59 +24,78 @@ function memberApi(status = "member"): Pick<Api, "getChatMember"> {
   } as unknown as Pick<Api, "getChatMember">;
 }
 
-test("sin Supabase, la selección usa la autorización local ya concedida", async () => {
+const CONFIG = {
+  supabaseUrl: "https://example.supabase.co",
+  supabaseKey: "sb_publishable_tests",
+};
+
+function catalogFetcher(groupId: number, userIds: number[]): typeof fetch {
+  return async () => new Response(JSON.stringify(userIds.map((userId) => ({
+    group_id: groupId,
+    user_id: userId,
+    display_name: `User ${userId}`,
+  }))), { status: 200 });
+}
+
+test("sin Supabase, la selección personalizada falla de forma cerrada", async () => {
   const dir = await mkdtemp(join(tmpdir(), "afrodita-auto-1-"));
   const store = new AfroditaStore(dir);
   try {
     await store.authorizeProfile(-100200, { userId: 501, displayName: "Luna", username: "luna_real" });
     await store.authorizePromotion(-100200, 501);
-    const eligible = await resolvePromotionProfiles(store, memberApi(), -100200, {});
-    assert.deepEqual(eligible, [{ userId: 501, displayName: "Luna" }]);
     await assert.rejects(
-      getEligiblePromotionProfiles(store, memberApi(), -100200, {}),
+      resolvePromotionProfiles(store, memberApi(), -100200, {}),
       /AFRODITA_SUPABASE_NOT_CONFIGURED/u,
-      "getEligible conserva su contrato fail-closed original",
+      "la autorización local no sustituye la verificación actual",
     );
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
 });
 
-test("catálogo caído no bloquea: resolve recurre a la autorización local", async () => {
+test("catálogo caído bloquea solo la promoción personalizada, no el entretenimiento", async () => {
   const dir = await mkdtemp(join(tmpdir(), "afrodita-auto-2-"));
   const store = new AfroditaStore(dir);
   try {
     await store.authorizeProfile(-100201, { userId: 502, displayName: "Sofi" });
     await store.authorizePromotion(-100201, 502);
-    const eligible = await resolvePromotionProfiles(
-      store,
-      memberApi(),
-      -100201,
-      { supabaseUrl: "https://example.supabase.co", supabaseKey: "sb_publishable_x" },
-      async () => {
+    await assert.rejects(
+      resolvePromotionProfiles(
+        store,
+        memberApi(),
+        -100201,
+        CONFIG,
+        async () => {
         throw new Error("catalog down");
-      },
+        },
+      ),
+      /AFRODITA_SUPABASE_NETWORK_ERROR/u,
     );
-    assert.deepEqual(eligible, [{ userId: 502, displayName: "Sofi" }]);
+    assert.ok(entertainmentPollContent("general", 0.9, "safe-slot").question);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
 });
 
-test("la lista y la membresía determinan elegibilidad; el consentimiento legacy no es requisito", async () => {
+test("se requieren lista local, permiso granular, verificación vigente y membresía", async () => {
   const dir = await mkdtemp(join(tmpdir(), "afrodita-auto-3-"));
   const store = new AfroditaStore(dir);
   try {
     await store.authorizeProfile(-100202, { userId: 503, displayName: "Vera" });
     await store.authorizePromotion(-100202, 503);
+    const fetcher = catalogFetcher(-100202, [503]);
+    assert.deepEqual(
+      await resolvePromotionProfiles(store, memberApi(), -100202, CONFIG, fetcher),
+      [{ userId: 503, displayName: "Vera", mention: true, body: false }],
+    );
     await store.revokePromotion(-100202, 503);
     assert.deepEqual(
-      await resolvePromotionProfiles(store, memberApi(), -100202, {}),
-      [{ userId: 503, displayName: "Vera" }],
-      "la lista es la autorización: retirar el consentimiento legacy no baja a la verificada",
+      await resolvePromotionProfiles(store, memberApi(), -100202, CONFIG, fetcher),
+      [],
+      "retirar el permiso legado revoca catálogo, menciones y encuestas sin tocar el perfil",
     );
     assert.deepEqual(
-      await resolvePromotionProfiles(store, memberApi("left"), -100202, {}),
+      await resolvePromotionProfiles(store, memberApi("left"), -100202, CONFIG, fetcher),
       [],
       "sin membresía activa no se promociona",
     );
@@ -116,6 +134,8 @@ test("publishProfilePromotion alterna suave y atrevido con autorización vigente
     const store = new AfroditaStore(dir);
     await store.authorizeProfile(-100205, { userId: 505, displayName: "Ari", username: "ari_sexy" });
     await store.authorizePromotion(-100205, 505);
+    await store.setContentConsent(-100205, 505, 505, ["body"], true);
+    await store.setAdultConfirmation(-100205, true);
     await store.setEnabled(-100205, true);
     return { dir, store };
   };

@@ -16,6 +16,37 @@ export interface AuthorizedProfile {
   username?: string;
 }
 
+export const CONTENT_PERMISSIONS = [
+  "catalog",
+  "mention",
+  "body",
+  "photos",
+  "videos",
+  "polls",
+] as const;
+
+export type ContentPermission = (typeof CONTENT_PERMISSIONS)[number];
+
+export interface ContentPermissionConsent {
+  granted: boolean;
+  grantedAt?: number;
+  revokedAt?: number;
+  grantedByUserId?: number;
+  revokedByUserId?: number;
+}
+
+export type ContentConsent = Record<
+  ContentPermission,
+  ContentPermissionConsent
+>;
+
+export interface ContentConsentAuditEntry {
+  userId: number;
+  permission: ContentPermission;
+  action: "granted" | "revoked";
+  at: number;
+}
+
 export interface PollTally {
   topics: AfroditaTopic[];
   votes: number[];
@@ -111,6 +142,9 @@ export interface AfroditaState {
   activityPaused: boolean;
   timeZone: string;
   publications: PublicationSettingsByCategory;
+  contentConsents: Record<string, ContentConsent>;
+  contentConsentAudit: ContentConsentAuditEntry[];
+  adultConfirmedAt?: number;
   promotionConsents: Record<string, number>;
   recentPromotedUserIds: number[];
   messagesSincePromotion: number;
@@ -260,6 +294,8 @@ export function initialAfroditaState(): AfroditaState {
     activityPaused: false,
     timeZone: "UTC",
     publications: structuredClone(DEFAULT_PUBLICATION_SETTINGS),
+    contentConsents: {},
+    contentConsentAudit: [],
     promotionConsents: {},
     recentPromotedUserIds: [],
     messagesSincePromotion: 0,

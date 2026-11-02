@@ -21,33 +21,24 @@ const TIME_ZONES = [
   "America/Argentina/Buenos_Aires",
 ];
 
+/**
+ * Aviso de reubicación: la administración de AFRODITA se centralizó en el
+ * panel privado de ZEUS (sección 🌸 AFRODITA). El panel grupal quedó retirado.
+ */
+const ZEUS_PANEL_NOTICE =
+  "🌸 La administración de AFRODITA ahora vive en el panel privado de ZEUS. " +
+  "Habla con ZEUS en privado y usa /menu → 🌸 AFRODITA para ver el resumen, " +
+  "publicaciones, encuestas, menciones, grupos, programación, historial y " +
+  "configuración de este grupo.";
+
+const ZEUS_PANEL_CALLBACK_NOTICE =
+  "🌸 El panel de AFRODITA se movió al panel privado de ZEUS (/menu → 🌸 AFRODITA).";
+
 export async function showAdminMenu(
   ctx: Context,
   store: AfroditaStore,
 ): Promise<void> {
-  if (!ctx.chat || (ctx.chat.type !== "group" && ctx.chat.type !== "supergroup")) {
-    await ctx.reply("Abre /menu dentro del grupo que quieres administrar.");
-    return;
-  }
-  if (!ctx.from) return;
-  const check = await checkGroupAdministrator(ctx.api, ctx.chat.id, ctx.from.id);
-  if (check.status !== "administrator") {
-    await ctx.reply(check.status === "unavailable"
-      ? "No pude verificar tus permisos con Telegram."
-      : "Solo una persona administradora del grupo puede abrir este panel.");
-    return;
-  }
-  let state: AfroditaState;
-  try {
-    state = await store.loadGroup(ctx.chat.id);
-  } catch (error) {
-    console.error(
-      `[AFRODITA] No se pudo leer el estado del panel groupId=${ctx.chat.id} (${safeErrorType(error)}).`,
-    );
-    await ctx.reply("No pude cargar el estado de AFRODITA. Inténtalo de nuevo más tarde.");
-    return;
-  }
-  await ctx.reply(renderStatus(state), { reply_markup: mainKeyboard(state) });
+  await ctx.reply(ZEUS_PANEL_NOTICE);
 }
 
 export async function handleAdminMenuCallback(
@@ -64,144 +55,14 @@ export async function handleAdminMenuCallback(
     await ctx.answerCallbackQuery({ text: "Este botón ya no es válido." });
     return;
   }
-  const check = ctx.from
-    ? await checkGroupAdministrator(ctx.api, ctx.chat.id, ctx.from.id)
-    : { status: "not_administrator" as const };
-  if (check.status !== "administrator") {
-    await ctx.answerCallbackQuery({
-      text: check.status === "unavailable"
-        ? "No pude verificar tus permisos."
-        : "Solo administradores pueden cambiar estos ajustes.",
-      show_alert: true,
-    });
-    return;
-  }
-
-  const data = query.data;
-  if (data === "af:main") {
-    try {
-      const state = await store.loadGroup(ctx.chat.id);
-      await ctx.editMessageText(renderStatus(state), {
-        reply_markup: mainKeyboard(state),
-      });
-      await ctx.answerCallbackQuery({ text: "Panel actualizado." });
-    } catch (error) {
-      console.error(
-        `[AFRODITA] No se pudo actualizar el panel groupId=${ctx.chat.id} (${safeErrorType(error)}).`,
-      );
-      await ctx.answerCallbackQuery({
-        text: "No pude actualizar el panel. Inténtalo de nuevo.",
-        show_alert: true,
-      });
-    }
-    return;
-  }
-
-  try {
-    if (data === "af:toggle:all") {
-      const state = await store.loadGroup(ctx.chat.id);
-      await store.setEnabled(ctx.chat.id, !state.enabled);
-    } else if (data === "af:timezone") {
-      const state = await store.loadGroup(ctx.chat.id);
-      const index = TIME_ZONES.indexOf(state.timeZone);
-      await store.setTimeZone(
-        ctx.chat.id,
-        TIME_ZONES[(index + 1) % TIME_ZONES.length]!,
-      );
-    } else {
-      const parts = data.split(":");
-      if (parts[0] !== "af" || parts.length < 3) {
-        await ctx.answerCallbackQuery({ text: "Este botón ya no es válido." });
-        return;
-      }
-      const category = parts[2] as PublicationCategory;
-      if (!PUBLICATION_CATEGORIES.includes(category)) {
-        await ctx.answerCallbackQuery({ text: "Este botón ya no es válido." });
-        return;
-      }
-      const action = parts[1];
-      if (action === "view") {
-        try {
-          const state = await store.loadGroup(ctx.chat.id);
-          await ctx.editMessageText(renderCategory(state, category), {
-            reply_markup: categoryKeyboard(state, category),
-          });
-          await ctx.answerCallbackQuery();
-        } catch (error) {
-          console.error(
-            `[AFRODITA] No se pudo cargar una categoría del panel groupId=${ctx.chat.id} (${safeErrorType(error)}).`,
-          );
-          await ctx.answerCallbackQuery({
-            text: "No pude cargar esa categoría. Inténtalo de nuevo.",
-            show_alert: true,
-          });
-        }
-        return;
-      } else if (action === "toggle" && parts[3] === "enabled") {
-        await store.updatePublicationSettings(ctx.chat.id, category, (settings) => {
-          settings.enabled = !settings.enabled;
-        });
-      } else if (action === "toggle" && parts[3] === "scheduled") {
-        await store.updatePublicationSettings(ctx.chat.id, category, (settings) => {
-          settings.scheduledEnabled = !settings.scheduledEnabled;
-        });
-      } else if (action === "toggle" && parts[3] === "activity") {
-        await store.updatePublicationSettings(ctx.chat.id, category, (settings) => {
-          settings.activityEnabled = !settings.activityEnabled;
-        });
-      } else if (action === "quota" && category === "commercial_poll") {
-        await store.updatePublicationSettings(ctx.chat.id, category, (settings) => {
-          settings.maxPerDay = settings.maxPerDay === 2 ? 3 : 2;
-        });
-      } else if (action === "quota" && category === "verified_promotion") {
-        await store.updatePublicationSettings(ctx.chat.id, category, (settings) => {
-          settings.maxPerDay = settings.maxPerDay >= 3
-            ? 1
-            : settings.maxPerDay + 1;
-        });
-      } else if (action === "interval") {
-        const intervals = [2, 4, 6, 8].map((hours) => hours * 60 * 60 * 1000);
-        await store.updatePublicationSettings(ctx.chat.id, category, (settings) => {
-          const index = intervals.indexOf(settings.minIntervalMs);
-          settings.minIntervalMs = intervals[(index + 1) % intervals.length]!;
-        });
-      } else if (action === "schedule") {
-        await store.updatePublicationSettings(ctx.chat.id, category, (settings) => {
-          settings.scheduleTimes = rotateTime(settings.scheduleTimes, category);
-        });
-      } else {
-        await ctx.answerCallbackQuery({ text: "Este botón ya no es válido." });
-        return;
-      }
-    }
-
-  } catch (error) {
-    console.error(
-      `[AFRODITA] No se pudo guardar un ajuste del panel groupId=${ctx.chat.id} (${safeErrorType(error)}).`,
-    );
-    await ctx.answerCallbackQuery({
-      text: "No pude guardar el ajuste. Inténtalo de nuevo.",
-      show_alert: true,
-    });
-    return;
-  }
-
-  try {
-    const state = await store.loadGroup(ctx.chat.id);
-    await ctx.editMessageText(renderStatus(state), {
-      reply_markup: mainKeyboard(state),
-    });
-    await ctx.answerCallbackQuery({ text: "Ajuste guardado." });
-  } catch (error) {
-    console.error(
-      `[AFRODITA] Se guardó el ajuste pero no se pudo refrescar el panel groupId=${ctx.chat.id} (${safeErrorType(error)}).`,
-    );
-    await ctx.answerCallbackQuery({
-      text: "El ajuste se guardó, pero no pude actualizar el panel. Pulsa refrescar.",
-      show_alert: true,
-    });
-  }
+  // Toda operación de administración fue centralizada en ZEUS: este panel ya
+  // no aplica cambios; solo informa dónde vive ahora la administración.
+  await ctx.answerCallbackQuery({
+    text: ZEUS_PANEL_CALLBACK_NOTICE,
+    show_alert: true,
+  });
 }
+
 
 function mainKeyboard(state: AfroditaState): InlineKeyboard {
   const keyboard = new InlineKeyboard()
@@ -230,6 +91,7 @@ function mainKeyboard(state: AfroditaState): InlineKeyboard {
 function renderStatus(state: AfroditaState): string {
   const lines = [
     `AFRODITA: ${state.enabled ? "activa" : "pausada"}`,
+    `Contenido adulto: ${state.adultConfirmedAt ? "confirmado por administración" : "desactivado"}`,
     `Zona horaria: ${state.timeZone}`,
     "",
   ];
@@ -246,6 +108,7 @@ function renderStatus(state: AfroditaState): string {
   lines.push(
     "",
     `Perfiles en la lista de verificadas: ${Object.keys(state.authorizedProfiles).length} · Consentimientos legacy: ${Object.keys(state.promotionConsents).length}`,
+    "Usa /afrodita_adulto confirmar o /afrodita_adulto retirar para cambiar la autorización adulta.",
     "Los rechazos definitivos liberan la cuota y respetan el intervalo mínimo antes de reintentar; los resultados ambiguos conservan la cuota.",
   );
   return lines.join("\n");

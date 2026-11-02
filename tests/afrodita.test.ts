@@ -341,12 +341,10 @@ test("catalog replies vary and generated content rejects links, mentions, and se
     pollContent("general", 0).question,
     pollContent("general", 0.99).question,
   );
-  assert.deepEqual(pollContent("general").topics, [
-    "productos",
-    "servicios",
-    "belleza",
-    "moda",
-  ]);
+  assert.equal(pollContent("general").topics.length, 4);
+  assert.ok(pollContent("general").topics.every((topic) =>
+    ["productos", "servicios", "belleza", "moda", "comida", "bienestar", "general"].includes(topic),
+  ));
   assert.equal(isSafeGeneratedReply("¡Qué buena pregunta! 😄"), true);
   assert.equal(isSafeGeneratedReply("Escríbeme a https://example.com"), false);
   assert.equal(isSafeGeneratedReply("Hola @usuario"), false);
@@ -464,10 +462,11 @@ test("verified model sales replies are contextual, varied, and do not assert pri
     { groupId: -100, userId: 2, displayName: "Luz", media: [] },
   ];
 
-  const callReply = verifiedModelsReply(models, "¿Tienen videollamada?", 0);
-  const catalogReply = verifiedModelsReply(models, "¿Precio del catálogo?", 0);
-  const photosReply = verifiedModelsReply(models, "¿Hay fotos?", 0);
-  const availabilityReply = verifiedModelsReply(models, "¿Está sola ahora?", 0);
+  const allowAdultContent = { allowAdultContent: true };
+  const callReply = verifiedModelsReply(models, "¿Tienen videollamada?", 0, allowAdultContent);
+  const catalogReply = verifiedModelsReply(models, "¿Precio del catálogo?", 0, allowAdultContent);
+  const photosReply = verifiedModelsReply(models, "¿Hay fotos?", 0, allowAdultContent);
+  const availabilityReply = verifiedModelsReply(models, "¿Está sola ahora?", 0, allowAdultContent);
 
   assert.match(callReply, /videollamada/i);
   assert.match(catalogReply, /catálogo/i);
@@ -476,8 +475,8 @@ test("verified model sales replies are contextual, varied, and do not assert pri
   assert.match(callReply, /Ana, Luz/);
   assert.match(catalogReply, /sin compromiso/i);
   assert.notEqual(
-    verifiedModelsReply(models, "¿Tienen videollamada?", 0),
-    verifiedModelsReply(models, "¿Tienen videollamada?", 0.99),
+    verifiedModelsReply(models, "¿Tienen videollamada?", 0, allowAdultContent),
+    verifiedModelsReply(models, "¿Tienen videollamada?", 0.99, allowAdultContent),
   );
 });
 

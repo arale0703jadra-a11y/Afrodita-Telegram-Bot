@@ -8,6 +8,7 @@ import {
   createProfilePromotionMessage,
   getEligiblePromotionProfiles,
   orderEligiblePromotionProfiles,
+  publishCommunityReply,
   publishProfilePromotion,
   publishScheduledJob,
 } from "../src/publishers.js";
@@ -16,7 +17,8 @@ import {
   reservePublication,
 } from "../src/publications.js";
 import { AfroditaStore } from "../src/store.js";
-import type { AfroditaState } from "../src/types.js";
+import { DEFAULT_AFRODITA_LIMITS, type AfroditaState } from "../src/types.js";
+import { canPublish } from "../src/decision.js";
 
 async function preparePromotionStore(
   store: AfroditaStore,
@@ -60,7 +62,7 @@ test("promotion rotation prefers never-promoted and oldest-promoted profiles", (
 
 test("profile promotion uses a Telegram ID text mention and UTF-16 offsets", () => {
   const message = createProfilePromotionMessage(
-    { userId: 456, displayName: "Zoë 🌺" },
+    { userId: 456, displayName: "Zoë 🌺", mention: true },
     0,
   );
 
@@ -82,6 +84,44 @@ test("profile promotion uses a Telegram ID text mention and UTF-16 offsets", () 
     createProfilePromotionMessage({ userId: 456, displayName: " \n " }, 0),
     undefined,
   );
+});
+
+test("profile presentations vary and only describe verified authorization and public choice", () => {
+  const presentations = Array.from({ length: 8 }, (_, templateIndex) =>
+    createProfilePromotionMessage(
+      { userId: 456, displayName: "Perfil autorizado", mention: true },
+      templateIndex,
+    ),
+  );
+  assert.ok(presentations.every(Boolean));
+  assert.equal(new Set(presentations.map((item) => item?.text)).size, 8);
+  for (const presentation of presentations) {
+    assert.match(presentation!.text, /Perfil autorizado/u);
+    assert.match(presentation!.text, /verificad|autorizad/u);
+    assert.doesNotMatch(presentation!.text, /precio|disponible|contenido sexual/u);
+    assert.equal(presentation!.entities[0]?.user.id, 456);
+  }
+});
+
+test("successful conversational publication updates the counters used by decision limits", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "afrodita-reply-limits-"));
+  const store = new AfroditaStore(directory);
+  try {
+    await store.setEnabled(-100128, true);
+    assert.equal(await publishCommunityReply(async () => undefined, store, -100128, 456), true);
+
+    const state = await store.loadGroup(-100128);
+    assert.equal(state.postsToday, 1);
+    assert.ok(state.lastActionAt > 0);
+    assert.equal(
+      canPublish(state, "reply", state.lastActionAt + DEFAULT_AFRODITA_LIMITS.minPostIntervalMs - 1),
+      false,
+      "el intervalo de decisión se aplica con contadores que se actualizan tras publicar",
+    );
+    assert.ok(state.communityReplyUserCooldowns["456"] > Date.now());
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 
 test("promotion requires the same group's local profile authorization and consent", async () => {
@@ -347,7 +387,12 @@ test("eligible promotion profiles require current group catalog, local authoriza
       config,
       fetcher,
     );
-    assert.deepEqual(eligible, [{ userId: 789, displayName: "Authorized" }]);
+    assert.deepEqual(eligible, [{
+      userId: 789,
+      displayName: "Authorized",
+      mention: true,
+      body: false,
+    }]);
     assert.equal(fetchCalls, 1);
 
     await store.removeProfile(-100130, 789);

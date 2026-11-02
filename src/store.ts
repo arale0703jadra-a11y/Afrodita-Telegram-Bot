@@ -15,10 +15,13 @@ import type {
   AfroditaState,
   AfroditaTopic,
   AuthorizedProfile,
+  ContentConsent,
+  ContentConsentAuditEntry,
+  ContentPermission,
   PublicationCategory,
   PublicationSettings,
 } from "./types.js";
-import { PUBLICATION_CATEGORIES } from "./types.js";
+import { CONTENT_PERMISSIONS, PUBLICATION_CATEGORIES } from "./types.js";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -28,6 +31,12 @@ function finiteCount(value: unknown): number {
   return typeof value === "number" && Number.isFinite(value) && value >= 0
     ? Math.min(Number.MAX_SAFE_INTEGER, Math.floor(value))
     : 0;
+}
+
+function emptyConsent(): ContentConsent {
+  return Object.fromEntries(
+    CONTENT_PERMISSIONS.map((permission) => [permission, { granted: false }]),
+  ) as ContentConsent;
 }
 
 function validTimeZone(value: unknown): string {
@@ -134,6 +143,7 @@ function normalizeState(value: unknown): AfroditaState {
   const rawProfiles = isRecord(value.authorizedProfiles) ? value.authorizedProfiles : {};
   const rawPublications = isRecord(value.publications) ? value.publications : {};
   const rawConsents = isRecord(value.promotionConsents) ? value.promotionConsents : {};
+  const rawContentConsents = isRecord(value.contentConsents) ? value.contentConsents : {};
   const initialPublications = initial.publications;
   const publications = Object.fromEntries(
     PUBLICATION_CATEGORIES.map((category) => [
@@ -208,6 +218,79 @@ function normalizeState(value: unknown): AfroditaState {
       promotionConsents[key] = grantedAt;
     }
   }
+  const contentConsents: Record<string, ContentConsent> = {};
+  for (const [userId, rawConsent] of Object.entries(rawContentConsents)) {
+    if (!/^[1-9]\d{0,15}$/u.test(userId) || !Number.isSafeInteger(Number(userId))) continue;
+    const consent = emptyConsent();
+    if (isRecord(rawConsent)) {
+      for (const permission of CONTENT_PERMISSIONS) {
+        const rawPermission = rawConsent[permission];
+        if (!isRecord(rawPermission)) continue;
+        const grantedAt = typeof rawPermission.grantedAt === "number" &&
+          Number.isFinite(rawPermission.grantedAt) && rawPermission.grantedAt > 0
+          ? rawPermission.grantedAt
+          : undefined;
+        const grantedByUserId = rawPermission.grantedByUserId === Number(userId)
+          ? Number(userId)
+          : undefined;
+        const granted = rawPermission.granted === true &&
+          grantedAt !== undefined &&
+          grantedByUserId !== undefined;
+        const revokedAt = typeof rawPermission.revokedAt === "number" &&
+          Number.isFinite(rawPermission.revokedAt) && rawPermission.revokedAt > 0
+          ? rawPermission.revokedAt
+          : undefined;
+        consent[permission] = {
+          granted,
+          ...(grantedAt && grantedByUserId ? {
+            grantedAt,
+            grantedByUserId,
+          } : {}),
+          ...(revokedAt ? { revokedAt } : {}),
+          ...(!granted &&
+            typeof rawPermission.revokedByUserId === "number" &&
+            rawPermission.revokedByUserId === Number(userId)
+            ? { revokedByUserId: Number(userId) }
+            : {}),
+        };
+      }
+    }
+    contentConsents[userId] = consent;
+  }
+  for (const [userId, grantedAt] of Object.entries(promotionConsents)) {
+    if (contentConsents[userId]) continue;
+    const migrated = emptyConsent();
+    for (const permission of ["catalog", "mention", "polls"] as const) {
+      migrated[permission] = {
+        granted: true,
+        grantedAt,
+        grantedByUserId: Number(userId),
+      };
+    }
+    contentConsents[userId] = migrated;
+  }
+  const rawConsentAudit = Array.isArray(value.contentConsentAudit)
+    ? value.contentConsentAudit
+    : [];
+  const contentConsentAudit: ContentConsentAuditEntry[] = rawConsentAudit
+    .filter((entry): entry is Record<string, unknown> =>
+      isRecord(entry) &&
+      typeof entry.userId === "number" &&
+      Number.isSafeInteger(entry.userId) &&
+      entry.userId > 0 &&
+      CONTENT_PERMISSIONS.includes(entry.permission as ContentPermission) &&
+      (entry.action === "granted" || entry.action === "revoked") &&
+      typeof entry.at === "number" &&
+      Number.isFinite(entry.at) &&
+      entry.at > 0,
+    )
+    .slice(-500)
+    .map((entry) => ({
+      userId: entry.userId as number,
+      permission: entry.permission as ContentPermission,
+      action: entry.action as "granted" | "revoked",
+      at: entry.at as number,
+    }));
   const rawCooldowns = isRecord(value.communityReplyUserCooldowns)
     ? value.communityReplyUserCooldowns
     : {};
@@ -223,6 +306,13 @@ function normalizeState(value: unknown): AfroditaState {
     enabled: value.enabled === true,
     timeZone: validTimeZone(value.timeZone),
     publications,
+    contentConsents,
+    contentConsentAudit,
+    ...(typeof value.adultConfirmedAt === "number" &&
+      Number.isFinite(value.adultConfirmedAt) &&
+      value.adultConfirmedAt > 0
+      ? { adultConfirmedAt: value.adultConfirmedAt }
+      : {}),
     promotionConsents,
     recentPromotedUserIds: Array.isArray(value.recentPromotedUserIds)
       ? value.recentPromotedUserIds.filter(
@@ -415,12 +505,96 @@ export class AfroditaStore {
     }
     await this.updateGroup(chatId, (state) => {
       state.promotionConsents[String(userId)] = grantedAt;
+      const consent = state.contentConsents[String(userId)] ?? emptyConsent();
+      for (const permission of ["catalog", "mention", "polls"] as const) {
+        if (!consent[permission].granted) {
+          state.contentConsentAudit.push({
+            userId,
+            permission,
+            action: "granted",
+            at: grantedAt,
+          });
+        }
+        consent[permission] = {
+          granted: true,
+          grantedAt,
+          grantedByUserId: userId,
+        };
+      }
+      state.contentConsents[String(userId)] = consent;
+      state.contentConsentAudit = state.contentConsentAudit.slice(-500);
     });
   }
 
   async revokePromotion(chatId: number, userId: number): Promise<void> {
     await this.updateGroup(chatId, (state) => {
       delete state.promotionConsents[String(userId)];
+      const consent = state.contentConsents[String(userId)];
+      if (!consent) return;
+      const at = Date.now();
+      for (const permission of ["catalog", "mention", "polls"] as const) {
+        if (!consent[permission].granted) continue;
+        consent[permission] = {
+          ...consent[permission],
+          granted: false,
+          revokedAt: at,
+          revokedByUserId: userId,
+        };
+        state.contentConsentAudit.push({
+          userId,
+          permission,
+          action: "revoked",
+          at,
+        });
+      }
+      state.contentConsentAudit = state.contentConsentAudit.slice(-500);
+    });
+  }
+
+  async setContentConsent(
+    chatId: number,
+    userId: number,
+    actorUserId: number,
+    permissions: readonly ContentPermission[],
+    granted: boolean,
+    at = Date.now(),
+  ): Promise<void> {
+    if (
+      !Number.isSafeInteger(userId) || userId <= 0 ||
+      userId !== actorUserId ||
+      !Number.isFinite(at) || at <= 0 ||
+      permissions.length === 0 ||
+      permissions.some((permission) => !CONTENT_PERMISSIONS.includes(permission))
+    ) {
+      throw new Error("AFRODITA_CONTENT_CONSENT_INVALID");
+    }
+    await this.updateGroup(chatId, (state) => {
+      const consent = state.contentConsents[String(userId)] ?? emptyConsent();
+      for (const permission of new Set(permissions)) {
+        const previous = consent[permission];
+        if (previous.granted === granted) continue;
+        consent[permission] = granted
+          ? { ...previous, granted: true, grantedAt: at, grantedByUserId: userId }
+          : { ...previous, granted: false, revokedAt: at, revokedByUserId: userId };
+        state.contentConsentAudit.push({
+          userId,
+          permission,
+          action: granted ? "granted" : "revoked",
+          at,
+        });
+      }
+      state.contentConsents[String(userId)] = consent;
+      state.contentConsentAudit = state.contentConsentAudit.slice(-500);
+    });
+  }
+
+  async setAdultConfirmation(chatId: number, confirmed: boolean, at = Date.now()): Promise<void> {
+    if (!Number.isFinite(at) || at <= 0) {
+      throw new Error("AFRODITA_ADULT_CONFIRMATION_INVALID");
+    }
+    await this.updateGroup(chatId, (state) => {
+      if (confirmed) state.adultConfirmedAt = at;
+      else delete state.adultConfirmedAt;
     });
   }
 

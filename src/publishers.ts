@@ -18,7 +18,7 @@ import {
   type PublicationTrigger,
 } from "./publications.js";
 import type { AfroditaStore } from "./store.js";
-import type { AfroditaTopic, PublicationCategory } from "./types.js";
+import type { AfroditaTopic, ContentPermission, PublicationCategory } from "./types.js";
 import { getActiveVerifiedModels } from "./verified-users.js";
 
 export interface PollPublication {
@@ -26,21 +26,26 @@ export interface PollPublication {
   options: string[];
   topics: AfroditaTopic[];
   scheduledKey?: string;
+  adult?: true;
+  subjectUserIds?: number[];
+  mentionedUserIds?: number[];
 }
 
 export interface EligiblePromotionProfile {
   userId: number;
   displayName: string;
+  mention?: boolean;
+  body?: boolean;
 }
 
 export interface ProfilePromotionMessage {
   text: string;
-  entities: [{
+  entities: Array<{
     type: "text_mention";
     offset: number;
     length: number;
     user: { id: number; is_bot: false; first_name: string };
-  }];
+  }>;
 }
 
 export function createProfilePromotionMessage(
@@ -59,11 +64,17 @@ export function createProfilePromotionMessage(
   if (!safeName) return undefined;
 
   const templates = [
-    `✨ Conoce el perfil verificado de ${safeName}, autorizado para presentarse en este grupo. Descubre la información que decidió compartir.`,
-    `👀 Una recomendación de la comunidad: el perfil verificado de ${safeName} está autorizado para presentarse aquí. Consulta su información pública.`,
-    `💫 Hoy destacamos a ${safeName}: su perfil verificado cuenta con autorización para aparecer en este grupo. Conoce solo los detalles que decidió publicar.`,
+    `🌸 Hoy damos la bienvenida al perfil verificado de ${safeName}, autorizado para este grupo. Puedes conocer solo la información que decidió compartir.`,
+    `✨ Una nueva presentación para la comunidad: ${safeName} tiene un perfil verificado y autorizado aquí. La decisión de qué publicar es siempre suya.`,
+    `👋 Si aún no lo conocías, ${safeName} cuenta con un perfil verificado autorizado en este grupo. Acércate con respeto y consulta únicamente lo que publicó.`,
+    `💫 Espacio para descubrir perfiles con calma: ${safeName} cuenta con un perfil verificado autorizado para este grupo. Cada detalle compartido depende de esa persona.`,
+    `🌿 Presentación de hoy: ${safeName}, perfil verificado con autorización para este grupo. Sin suposiciones; solo vale lo que eligió hacer público.`,
+    `🧡 La comunidad también se construye con presentaciones respetuosas. ${safeName} tiene un perfil verificado autorizado para este grupo.`,
+    `🔎 ¿Te gusta descubrir perfiles nuevos? ${safeName} cuenta con un perfil verificado autorizado aquí; revisa únicamente la información que publicó.`,
+    `🌟 Damos un espacio a ${safeName}, con perfil verificado y autorización vigente en el grupo. La conversación y el interés deben ser siempre respetuosos.`,
   ];
   const text = templates[((templateIndex % templates.length) + templates.length) % templates.length]!;
+  if (!profile.mention) return { text, entities: [] };
   const offset = text.indexOf(safeName);
   if (offset < 0) return undefined;
 
@@ -88,6 +99,7 @@ export async function getEligiblePromotionProfiles(
   chatId: number,
   config: Pick<AfroditaConfig, "supabaseUrl" | "supabaseKey">,
   fetcher: typeof fetch = fetch,
+  permission: ContentPermission = "catalog",
 ): Promise<EligiblePromotionProfile[]> {
   const state = await store.loadGroup(chatId);
   if (!config.supabaseUrl || !config.supabaseKey) {
@@ -105,6 +117,8 @@ export async function getEligiblePromotionProfiles(
   const eligible: EligiblePromotionProfile[] = [];
   for (const model of models) {
     if (!authorizedIds.has(String(model.userId))) continue;
+    const consent = state.contentConsents[String(model.userId)];
+    if (!consent?.[permission].granted) continue;
     const membership = await api.getChatMember(chatId, model.userId);
     if (
       membership.status === "left" ||
@@ -114,6 +128,8 @@ export async function getEligiblePromotionProfiles(
     eligible.push({
       userId: model.userId,
       displayName: state.authorizedProfiles[String(model.userId)]!.displayName,
+      mention: consent.mention.granted,
+      body: consent.body.granted,
     });
   }
   return orderEligiblePromotionProfiles(eligible, state.recentPromotedUserIds);
@@ -133,42 +149,8 @@ export function orderEligiblePromotionProfiles(
 
 
 /**
- * Selección de promociones SIN depender de Supabase: usa la autorización ya
- * concedida en local (`authorizedProfiles` ∩ `promotionConsents`) y revalida
- * la membresía activa con Telegram. Respeta revocaciones y rotación.
- */
-export async function getAuthorizedPromotionProfiles(
-  store: AfroditaStore,
-  api: Pick<Api, "getChatMember">,
-  chatId: number,
-): Promise<EligiblePromotionProfile[]> {
-  const state = await store.loadGroup(chatId);
-  const profiles: EligiblePromotionProfile[] = [];
-  for (const [key, profile] of Object.entries(state.authorizedProfiles)) {
-    if (!Number.isSafeInteger(Number(key))) {
-      continue;
-    }
-    let membership: Awaited<ReturnType<Api["getChatMember"]>>;
-    try {
-      membership = await api.getChatMember(chatId, profile.userId);
-    } catch {
-      continue;
-    }
-    if (
-      membership.status === "left" ||
-      membership.status === "kicked" ||
-      (membership.status === "restricted" && !membership.is_member)
-    ) continue;
-    profiles.push({ userId: profile.userId, displayName: profile.displayName });
-  }
-  return orderEligiblePromotionProfiles(profiles, state.recentPromotedUserIds);
-}
-
-/**
- * Resolución de perfiles promocionables: valida contra el catálogo de ZEUS
- * cuando Supabase está disponible (comportamiento original fail-closed) y,
- * si el catálogo no está configurado o falla, recurre a la autorización local
- * ya concedida para que la publicación automática no quede bloqueada.
+ * La selección requiere catálogo de ZEUS disponible, perfil autorizado en el
+ * grupo, consentimiento vigente y membresía activa en Telegram.
  */
 export async function resolvePromotionProfiles(
   store: AfroditaStore,
@@ -176,17 +158,9 @@ export async function resolvePromotionProfiles(
   chatId: number,
   config: Pick<AfroditaConfig, "supabaseUrl" | "supabaseKey">,
   fetcher: typeof fetch = fetch,
+  permission: ContentPermission = "catalog",
 ): Promise<EligiblePromotionProfile[]> {
-  try {
-    return await getEligiblePromotionProfiles(store, api, chatId, config, fetcher);
-  } catch (error) {
-    console.info(
-      `[AFRODITA] Catálogo no disponible para promociones groupId=${chatId} ` +
-        `(${error instanceof Error ? error.name : "unknown"}); ` +
-        "se usa la autorización local ya concedida.",
-    );
-    return await getAuthorizedPromotionProfiles(store, api, chatId);
-  }
+  return getEligiblePromotionProfiles(store, api, chatId, config, fetcher, permission);
 }
 export async function publishPoll(
   api: Pick<Api, "sendPoll">,
@@ -196,6 +170,16 @@ export async function publishPoll(
   content: PollPublication,
   trigger: PublicationTrigger,
 ): Promise<boolean> {
+  const state = await store.loadGroup(chatId);
+  if (content.adult && !state.adultConfirmedAt) return false;
+  if (
+    content.subjectUserIds?.some((userId) =>
+      !state.contentConsents[String(userId)]?.polls.granted,
+    ) ||
+    content.mentionedUserIds?.some((userId) =>
+      !state.contentConsents[String(userId)]?.mention.granted,
+    )
+  ) return false;
   const reservation = await reservePublication(
     store,
     chatId,
@@ -203,6 +187,24 @@ export async function publishPoll(
     trigger,
   );
   if (!reservation) return false;
+  const latestState = await store.loadGroup(chatId);
+  if (
+    content.adult && !latestState.adultConfirmedAt
+  ) {
+    await finalizePublication(store, reservation, "failed");
+    return false;
+  }
+  if (
+    content.subjectUserIds?.some((userId) =>
+      !latestState.contentConsents[String(userId)]?.polls.granted,
+    ) ||
+    content.mentionedUserIds?.some((userId) =>
+      !latestState.contentConsents[String(userId)]?.mention.granted,
+    )
+  ) {
+    await finalizePublication(store, reservation, "failed");
+    return false;
+  }
   let outcome: PublicationOutcome;
   let sentPollId: string | undefined;
   try {
@@ -251,10 +253,19 @@ export async function publishProfilePromotion(
     );
     return false;
   }
+  const consent = state.contentConsents[String(profile.userId)];
+  if (!consent?.catalog.granted) return false;
+  const currentProfile = {
+    ...profile,
+    mention: consent.mention.granted,
+    body: consent.body.granted,
+  };
   const message = createProfilePromotionMessage(
     {
       userId: authorizedProfile.userId,
       displayName: authorizedProfile.displayName,
+      mention: currentProfile.mention,
+      body: currentProfile.body,
     },
     templateIndex,
   );
@@ -272,17 +283,34 @@ export async function publishProfilePromotion(
   );
   if (!reservation) return false;
   try {
+    const latestState = await store.loadGroup(chatId);
+    const latestConsent = latestState.contentConsents[String(profile.userId)];
+    if (!latestConsent?.catalog.granted) {
+      await finalizePublication(store, reservation, "failed");
+      return false;
+    }
     const boldText =
+      latestState.adultConfirmedAt &&
+      latestConsent.body.granted &&
       templateIndex % 2 === 1
         ? boldProfilePromotion(
-            authorizedProfile,
+            {
+              displayName: authorizedProfile.displayName,
+              ...(latestConsent.mention.granted && authorizedProfile.username
+                ? { username: authorizedProfile.username }
+                : {}),
+            },
             Math.random(),
             `${profile.userId}:${templateIndex}`,
           )
         : "";
-    await api.sendMessage(chatId, boldText || message.text, boldText ? {} : {
-      entities: message.entities,
-    });
+    await api.sendMessage(
+      chatId,
+      boldText || message.text,
+      boldText || !latestConsent.mention.granted || message.entities.length === 0
+        ? {}
+        : { entities: message.entities },
+    );
   } catch (error) {
     const outcome = classifyPublicationFailure(error);
     await finalizePublication(store, reservation, outcome);
@@ -315,6 +343,7 @@ export async function publishCommunityReply(
   store: AfroditaStore,
   chatId: number,
   userId?: number,
+  beforeSend?: () => Promise<boolean>,
 ): Promise<boolean> {
   const trigger: PublicationTrigger = { kind: "activity", ...(userId ? { userId } : {}) };
   const reservation = await reservePublication(
@@ -325,6 +354,10 @@ export async function publishCommunityReply(
   );
   if (!reservation) return false;
   try {
+    if (beforeSend && !await beforeSend()) {
+      await finalizePublication(store, reservation, "failed");
+      return false;
+    }
     await send();
     await finalizePublication(store, reservation, "published");
     return true;
@@ -360,22 +393,41 @@ export async function publishScheduledJob(
     if (seasonal && !seasonalContent) return;
     let regularContent: PollPublication & { id?: string } | undefined = seasonalContent;
     if (!regularContent) {
-      regularContent = entertainmentPollContent("general", Math.random(), slotKey);
+      regularContent = entertainmentPollContent(
+        "general",
+        Math.random(),
+        slotKey,
+        state.adultConfirmedAt !== undefined,
+      );
       // Personalización: si hay perfiles YA autorizados, alterna encuesta
       // sobre perfiles con la encuesta general (sin nuevas autorizaciones).
       try {
-        const eligible = await resolvePromotionProfiles(store, api, chatId, config, fetcher);
+        const eligible = await resolvePromotionProfiles(
+          store,
+          api,
+          chatId,
+          config,
+          fetcher,
+          "polls",
+        );
         if (eligible.length > 0) {
           const varied = saltedRandomValue(Math.random(), slotKey);
           if (varied < 0.5) {
+            const latestState = await store.loadGroup(chatId);
             regularContent = verifiedModelsPollContent(
               "general",
-              eligible.map((candidate) => ({
-                groupId: chatId,
-                userId: candidate.userId,
-                displayName: candidate.displayName,
-                media: [],
-              })),
+              eligible.map((candidate) => {
+                const profile = latestState.authorizedProfiles[String(candidate.userId)];
+                return {
+                  groupId: chatId,
+                  userId: candidate.userId,
+                  displayName: candidate.displayName,
+                  ...(candidate.mention && profile?.username
+                    ? { username: profile.username }
+                    : {}),
+                  media: [],
+                };
+              }),
               varied,
             );
           }
@@ -399,7 +451,15 @@ export async function publishScheduledJob(
     );
     if (!reservation) return;
     try {
-      await api.sendMessage(chatId, entertainmentLineReply(Math.random(), slotKey));
+      const state = await store.loadGroup(chatId);
+      await api.sendMessage(
+        chatId,
+        entertainmentLineReply(
+          Math.random(),
+          slotKey,
+          state.adultConfirmedAt !== undefined,
+        ),
+      );
       await finalizePublication(store, reservation, "published");
     } catch (error) {
       await finalizePublication(
