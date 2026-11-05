@@ -1,5 +1,9 @@
 import type { AfroditaConfig } from "./config.js";
 import { safeErrorSummary, safeErrorType } from "./errors.js";
+import {
+  AfroditaActivityControl,
+  type GlobalActivityState,
+} from "./activity-control.js";
 import type { AfroditaStore } from "./store.js";
 import {
   PUBLICATION_CATEGORIES,
@@ -36,6 +40,7 @@ type ToggleableField = (typeof TOGGLEABLE_FIELDS)[number];
 export interface AfroditaIntegrationOptions {
   store: AfroditaStore;
   config: Pick<AfroditaConfig, "supabaseUrl" | "supabaseKey">;
+  activityControl?: AfroditaActivityControl;
   fetcher?: typeof fetch;
   intervalMs?: number;
   now?: () => number;
@@ -135,10 +140,21 @@ function validToggleField(value: unknown): value is ToggleableField {
  */
 async function applyCommand(
   store: AfroditaStore,
+  activityControl: AfroditaActivityControl,
+  writeGlobalState: (state: GlobalActivityState) => Promise<void>,
   chatId: number,
   command: PendingCommand,
 ): Promise<void> {
   const payload = command.payload;
+  if (
+    (command.command === "pause" || command.command === "resume") &&
+    payload.scope === "global"
+  ) {
+    const state = command.command === "pause" ? "paused" : "running";
+    await writeGlobalState(state);
+    activityControl.setState(state);
+    return;
+  }
   if (command.command === "pause") {
     await store.setEnabled(chatId, false);
     return;
@@ -167,6 +183,7 @@ export function startAfroditaIntegration(
 ): AfroditaIntegrationHandle {
   const {
     store,
+    activityControl = new AfroditaActivityControl("paused"),
     config,
     fetcher = fetch,
     intervalMs = DEFAULT_INTERVAL_MS,
@@ -176,10 +193,11 @@ export function startAfroditaIntegration(
   const key = config.supabaseKey;
 
   if (!url || !key) {
+    activityControl.setState("paused");
     console.warn(
       "[AFRODITA] Integración Supabase desactivada: faltan " +
-        "AFRODITA_SUPABASE_URL/AFRODITA_SUPABASE_KEY. AFRODITA seguirá " +
-        "operando de forma autónoma con su estado local.",
+        "AFRODITA_SUPABASE_URL/AFRODITA_SUPABASE_KEY. La actividad automática " +
+        "queda pausada hasta disponer del control persistente.",
     );
     return {
       enabled: false,
@@ -210,10 +228,11 @@ export function startAfroditaIntegration(
     method: string,
     path: string,
     body?: unknown,
+    prefer = "return=minimal",
   ): Promise<Response> {
     const init: RequestInit = { method, headers: { ...headers } };
     if (body !== undefined) {
-      init.headers = { ...headers, Prefer: "return=minimal" };
+      init.headers = { ...headers, Prefer: prefer };
       init.body = JSON.stringify(body);
     }
     return fetcher(`${url}/rest/v1/${path}`, init);
@@ -279,6 +298,56 @@ export function startAfroditaIntegration(
     });
   }
 
+  async function readGlobalControl(): Promise<GlobalActivityState | undefined> {
+    const response = await rest(
+      "GET",
+      "afrodita_control_state?id=eq.global&select=id,mode",
+    );
+    if (!response.ok) {
+      throw new Error(`AFRODITA_CONTROL_READ_HTTP_${response.status}`);
+    }
+    const rows: unknown = await response.json();
+    if (!Array.isArray(rows) || rows.length === 0) return undefined;
+    const row = rows[0];
+    if (
+      !isRecord(row) ||
+      row.id !== "global" ||
+      (row.mode !== "running" && row.mode !== "paused")
+    ) {
+      throw new Error("AFRODITA_CONTROL_STATE_INVALID");
+    }
+    return row.mode;
+  }
+
+  async function writeGlobalState(state: GlobalActivityState): Promise<void> {
+    const response = await rest(
+      "POST",
+      "afrodita_control_state?on_conflict=id",
+      {
+        id: "global",
+        mode: state,
+        updated_at: new Date(now()).toISOString(),
+        updated_by: "afrodita",
+        heartbeat_at: new Date(now()).toISOString(),
+      },
+      "resolution=merge-duplicates,return=minimal",
+    );
+    if (!response.ok) {
+      throw new Error(`AFRODITA_CONTROL_WRITE_HTTP_${response.status}`);
+    }
+  }
+
+  async function touchGlobalHeartbeat(): Promise<void> {
+    const response = await rest(
+      "PATCH",
+      "afrodita_control_state?id=eq.global",
+      { heartbeat_at: new Date(now()).toISOString() },
+    );
+    if (!response.ok) {
+      throw new Error(`AFRODITA_HEARTBEAT_HTTP_${response.status}`);
+    }
+  }
+
   async function markCommand(
     command: PendingCommand,
     status: "applied" | "failed",
@@ -286,10 +355,16 @@ export function startAfroditaIntegration(
   ): Promise<void> {
     const body: Record<string, unknown> = {
       status,
-      applied_at: new Date(now()).toISOString(),
     };
-    if (status === "failed") {
-      body.last_error = error ? safeErrorType(error).slice(0, 300) : "unknown";
+    if (status === "applied") {
+      body.applied_at = new Date(now()).toISOString();
+    } else {
+      const code = error instanceof Error ? error.message : "";
+      body.last_error = /^[A-Z][A-Z0-9_]{0,120}$/u.test(code)
+        ? code
+        : error
+          ? safeErrorType(error)
+          : "unknown";
     }
     const response = await rest(
       "PATCH",
@@ -310,8 +385,54 @@ export function startAfroditaIntegration(
   }
 
   async function runOnce(): Promise<void> {
+    let commands: PendingCommand[] = [];
+    let commandFetchOk = true;
+    try {
+      commands = await fetchPendingCommands();
+    } catch (error) {
+      commandFetchOk = false;
+      activityControl.setState("paused");
+      logError(
+        `[AFRODITA] No se pudieron consultar órdenes de ZEUS (${safeErrorSummary(error)}).`,
+      );
+    }
+    const globalCommands = commands.filter(
+      (command) =>
+        (command.command === "pause" || command.command === "resume") &&
+        command.payload.scope === "global",
+    );
+    if (globalCommands.length > 0) {
+      activityControl.setState("paused");
+    } else if (commandFetchOk) {
+      try {
+        const globalState = await readGlobalControl();
+        activityControl.setState(globalState ?? "paused");
+        if (globalState === undefined) {
+          try {
+            await writeGlobalState("paused");
+          } catch (error) {
+            logError(
+              `[AFRODITA] No se pudo inicializar el control global (${safeErrorSummary(error)}).`,
+            );
+          }
+        }
+      } catch (error) {
+        activityControl.setState("paused");
+        logError(
+          `[AFRODITA] No se pudo leer el control global (${safeErrorSummary(error)}).`,
+        );
+      }
+    }
+
     const events: NewEvent[] = [];
-    const groupIds = await store.listGroupIds();
+    let groupIds: number[] = [];
+    try {
+      groupIds = await store.listGroupIds();
+    } catch (error) {
+      logError(
+        `[AFRODITA] No se pudieron enumerar grupos para sincronizar (${safeErrorSummary(error)}).`,
+      );
+    }
     for (const chatId of groupIds) {
       try {
         await syncGroup(chatId, events);
@@ -322,20 +443,26 @@ export function startAfroditaIntegration(
         );
       }
     }
-    await pushEvents(events);
+    try {
+      await pushEvents(events);
+    } catch (error) {
+      logError(
+        `[AFRODITA] No se pudieron sincronizar eventos (${safeErrorSummary(error)}).`,
+      );
+    }
 
-    const commands = await fetchPendingCommands();
     for (const command of commands) {
       try {
-        await applyCommand(store, command.chat_id, command);
-        await markCommand(command, "applied");
-        console.info(
-          `[AFRODITA] Orden de ZEUS aplicada id=${command.id} ` +
-            `command=${command.command} groupId=${command.chat_id}.`,
+        await applyCommand(
+          store,
+          activityControl,
+          writeGlobalState,
+          command.chat_id,
+          command,
         );
       } catch (error) {
         logError(
-          `[AFRODITA] Orden de ZEUS rechazada id=${command.id} ` +
+          `[AFRODITA] No se pudo aplicar la orden de ZEUS id=${command.id} ` +
             `command=${command.command} (${safeErrorSummary(error)}).`,
         );
         try {
@@ -346,7 +473,27 @@ export function startAfroditaIntegration(
               `(${safeErrorSummary(markError)}).`,
           );
         }
+        continue;
       }
+      try {
+        await markCommand(command, "applied");
+        console.info(
+          `[AFRODITA] Orden de ZEUS aplicada id=${command.id} ` +
+            `command=${command.command} groupId=${command.chat_id}.`,
+        );
+      } catch (error) {
+        logError(
+          `[AFRODITA] No se pudo confirmar la orden aplicada id=${command.id} ` +
+            `(${safeErrorSummary(error)}); se reintentará de forma idempotente.`,
+        );
+      }
+    }
+    try {
+      await touchGlobalHeartbeat();
+    } catch (error) {
+      logError(
+        `[AFRODITA] No se pudo actualizar el heartbeat global (${safeErrorSummary(error)}).`,
+      );
     }
   }
 
@@ -356,6 +503,7 @@ export function startAfroditaIntegration(
     try {
       await runOnce();
     } catch (error) {
+      activityControl.setState("paused");
       logError(
         `[AFRODITA] Falló la sincronización con Supabase (${safeErrorSummary(error)}).`,
       );
@@ -396,4 +544,3 @@ export function startAfroditaIntegration(
     },
   };
 }
-

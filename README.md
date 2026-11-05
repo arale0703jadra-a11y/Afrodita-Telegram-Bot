@@ -21,3 +21,29 @@ Cada fila pertenece a un único `group_id` y el cliente descarta cualquier fila 
 La aprobación de perfiles consulta esta misma fuente Supabase; el JSON local de ZEUS ya no se usa para autorizar perfiles. El archivo `src/zeus-verification.ts` se conserva como lector legado independiente, pero no forma parte del flujo del bot.
 
 El RPC solo publica identidad básica. AFRODITA no recibe file IDs ni multimedia de Supabase con este contrato; las solicitudes de archivos pueden responder que no hay multimedia autorizada disponible hasta que se diseñe y apruebe un contrato específico de publicación multimedia.
+
+## Control global desde ZEUS
+
+La pausa general de AFRODITA se persiste en `public.afrodita_control_state`;
+las órdenes `pause` y `resume` se procesan desde `public.afrodita_commands`.
+ZEUS y AFRODITA deben tener configurada la integración Supabase y una persona
+autorizada debe aplicar en Supabase las migraciones 017 y 018 del repositorio
+ZEUS antes de usar el control. AFRODITA inicia pausada hasta leer el estado
+persistente, y la pausa no detiene la sincronización, el heartbeat ni el
+procesamiento de órdenes. Reanudar conserva los ajustes individuales por grupo
+y categoría.
+
+## Encuestas programadas
+
+Las encuestas `commercial_poll` usan un próximo horario aleatorio persistido
+por grupo, con un intervalo objetivo de 90–120 minutos. Los horarios
+configurados para esta categoría delimitan una ventana activa inclusiva entre
+la hora más temprana y la más tardía; fuera de ella no se publica. AFRODITA
+conserva los máximos e intervalos mínimos ya guardados por grupo: los estados
+nuevos parten de 8 encuestas diarias y 90 minutos de mínimo, mientras que los
+ajustes existentes no se migran automáticamente. Si un grupo ya tiene un
+mínimo mayor a 120 minutos, ese límite prevalece. Los reinicios y las pausas
+recalculan horarios vencidos en vez de enviar encuestas atrasadas. Solo los
+grupos con confirmación administrativa `adultConfirmedAt` reciben el banco
+adulto programado; el resto usa preguntas comunitarias aptas para público
+general.

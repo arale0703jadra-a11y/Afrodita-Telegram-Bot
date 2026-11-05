@@ -514,6 +514,164 @@ export function adultPollContent(
   };
 }
 
+export type ScheduledPollTheme = "intimacy" | "market";
+
+export interface ScheduledPollContent {
+  question: string;
+  options: string[];
+  topics: AfroditaTopic[];
+  templateId: string;
+  pollTheme?: ScheduledPollTheme;
+  adult?: true;
+}
+
+interface ScheduledPollTemplate {
+  id: string;
+  question: string;
+  options: string[];
+}
+
+const SCHEDULED_INTIMACY_POLLS: ScheduledPollTemplate[] = [
+  { id: "intimacy-interest-format", question: "¿Qué formato de contenido para adultos despierta más tu interés, sin necesidad de compartir detalles personales?", options: ["Fotografías sugerentes 📸", "Videos eróticos no gráficos 🔥", "Contenido personalizado 💋", "Prefiero no consumir contenido adulto"] },
+  { id: "intimacy-attraction", question: "Entre personas adultas, ¿qué suele despertar primero tu atracción?", options: ["La seguridad al expresarse ✨", "El sentido del humor 😏", "La química al conversar 💬", "La complicidad y el respeto 💜"] },
+  { id: "intimacy-fantasy-consent", question: "Al explorar una fantasía consensuada entre adultos, ¿qué te parece más importante?", options: ["Hablarla con claridad 🗣️", "Acordar límites antes 🔒", "Poder cambiar de opinión 💜", "Sentirse en confianza ❤️"] },
+  { id: "intimacy-relationship", question: "En una relación íntima entre adultos, ¿qué ayuda más a que ambas personas disfruten?", options: ["Comunicación honesta ❤️", "Confianza mutua 🔐", "Atracción y química 🔥", "Respeto por los límites 💜"] },
+  { id: "intimacy-erotic-content", question: "¿Qué estilo de contenido erótico prefieres cuando decides consumirlo?", options: ["Sugerente y artístico 🎨", "Romántico y cercano 💞", "Directo, pero no gráfico 🔥", "No suelo consumirlo 🌿"] },
+  { id: "intimacy-private-chat", question: "En una conversación íntima privada entre adultos, ¿qué tono te resulta más cómodo?", options: ["Coqueto y juguetón 😏", "Claro y directo 💬", "Romántico y atento ❤️", "Prefiero mantenerla casual 🌿"] },
+  { id: "intimacy-boundaries", question: "¿Qué forma de comunicar un límite en una situación íntima te parece más cómoda?", options: ["Decirlo claramente 🗣️", "Acordarlo antes de empezar 📝", "Preguntar durante la experiencia 💬", "Cualquiera, si se respeta de inmediato 💜"] },
+  { id: "intimacy-chemistry", question: "¿Qué te hace notar más la química con otra persona adulta?", options: ["Una conversación que fluye 💬", "La atracción mutua 🔥", "Sentirse escuchado y respetado 💜", "El humor compartido 😄"] },
+  { id: "intimacy-distance", question: "Para mantener la cercanía íntima a distancia, ¿qué formato consensuado prefieres?", options: ["Mensajes sugerentes 💌", "Audios con voz sensual 🎧", "Una llamada privada 📞", "No me interesa ese formato 🌿"] },
+  { id: "intimacy-seduction", question: "¿Qué estilo de coqueteo entre adultos te resulta más atractivo?", options: ["Seguro y respetuoso ✨", "Juguetón y con humor 😏", "Sutil y gradual 🌙", "Directo, preguntando primero 💬"] },
+  { id: "intimacy-comfort", question: "¿Qué contribuye más a sentirse a gusto al compartir intimidad con otra persona adulta?", options: ["Confianza y comunicación ❤️", "Privacidad y discreción 🔒", "Atracción y química 🔥", "Respeto mutuo 💜"] },
+  { id: "intimacy-romance", question: "¿Qué ambiente consensuado te parece más atractivo para una cita íntima adulta?", options: ["Luz tenue y música 🎶", "Una charla sin prisas 💬", "Un plan espontáneo ✨", "Un espacio privado y cómodo 🔒"] },
+  { id: "intimacy-erotic-story", question: "Si eliges contenido erótico, ¿qué estilo narrativo te atrae más?", options: ["Romántico y emocional 💞", "Juguetón y ligero 😏", "Misterioso y sugerente 🌙", "Prefiero otros formatos 🎥"] },
+  { id: "intimacy-mutual-interest", question: "¿Qué señal te parece más importante para saber que el interés íntimo es mutuo?", options: ["Una conversación clara 💬", "Iniciativa recíproca ✨", "Preguntar y escuchar ❤️", "Acordar los límites con calma 💜"] },
+  { id: "intimacy-private-content", question: "Al consumir contenido íntimo de adultos, ¿qué valoras más además del tema?", options: ["Que sea compartido con consentimiento ✅", "Que cuide la privacidad 🔒", "Que tenga un estilo auténtico ✨", "No consumo ese contenido 🌿"] },
+  { id: "intimacy-fantasy-tone", question: "¿Qué tono prefieres en una fantasía adulta compartida de forma consensuada?", options: ["Romántico 💞", "Travieso y divertido 😏", "Sensual y sugerente 🔥", "Conversado y con límites claros 💜"] },
+  { id: "intimacy-communication", question: "¿Qué conversación te parece más útil antes de una experiencia íntima entre adultos?", options: ["Qué desea cada persona 💬", "Qué límites hay que respetar 🔒", "Qué nivel de privacidad esperan 🔐", "Todo lo anterior, sin presión ❤️"] },
+  { id: "intimacy-attraction-style", question: "¿Qué rasgo te resulta más atractivo en otra persona adulta?", options: ["Confianza en sí misma ✨", "Atención y escucha ❤️", "Espontaneidad con respeto 😄", "Claridad al comunicar 💬"] },
+  { id: "intimacy-content-mood", question: "¿En qué momento te interesaría más explorar contenido erótico consensuado?", options: ["Cuando busco algo romántico 💞", "Para una ocasión especial ✨", "Por curiosidad personal 👀", "No suele interesarme 🌿"] },
+  { id: "intimacy-consent-change", question: "¿Qué debería ocurrir si alguien cambia de opinión durante un momento íntimo?", options: ["Parar y conversar 💬", "Respetar el cambio sin insistir 💜", "Tomarse un espacio si lo necesita 🌿", "Cualquiera de estas opciones, según la persona ❤️"] },
+  { id: "intimacy-private-media", question: "¿Qué te da más tranquilidad al compartir contenido íntimo consensuado entre adultos?", options: ["Acuerdos claros sobre su uso 📝", "Privacidad y discreción 🔒", "Poder retirar el consentimiento 💜", "No compartir contenido personal 🌿"] },
+  { id: "intimacy-attraction-connection", question: "¿Qué combina mejor con la atracción física para construir una conexión íntima?", options: ["Confianza ❤️", "Comunicación directa 💬", "Humor y complicidad 😄", "Respeto por los tiempos 💜"] },
+  { id: "intimacy-creator-content", question: "Al elegir contenido erótico para adultos, ¿qué estilo prefieres?", options: ["Casero y auténtico ✨", "Producción cuidada 🎬", "Personalizado según preferencias 💌", "Ninguno; no consumo contenido adulto 🌿"] },
+  { id: "intimacy-privacy-choice", question: "¿Qué nivel de privacidad prefieres al explorar temas íntimos en línea?", options: ["Solo contenido público y general 🌐", "Espacios privados con reglas claras 🔒", "No compartir información personal 🛡️", "Prefiero no tratarlo en línea 🌿"] },
+  { id: "intimacy-desire-talk", question: "¿Qué facilita hablar sobre gustos íntimos con una pareja adulta?", options: ["Elegir un momento tranquilo 🌙", "Hablar sin juzgar ❤️", "Preguntar antes de asumir 💬", "Dejar claro que nadie tiene que responder 💜"] },
+  { id: "intimacy-erotic-audio", question: "Si eliges contenido erótico en audio, ¿qué detalle prefieres?", options: ["Una voz cálida 🎧", "Una historia sugerente 📖", "Un tono espontáneo ✨", "No suelo escuchar ese formato 🌿"] },
+  { id: "intimacy-physical-first-look", question: "En una primera impresión entre adultos, ¿qué detalle físico suele llamar más tu atención?", options: ["Una mirada intensa 👀", "Una sonrisa irresistible 😏", "Unas piernas bonitas 🔥", "Un estilo que tenga actitud ✨"] },
+  { id: "intimacy-body-style", question: "Cuando sientes atracción por otra persona adulta, ¿qué rasgo te parece más atractivo?", options: ["Un buen escote 😏", "Un trasero que destaque 🍑", "Una silueta elegante ✨", "La seguridad con que se expresa 🔥"] },
+  { id: "intimacy-attraction-energy", question: "¿Qué mezcla de actitud y estilo te resulta más atractiva en una persona adulta?", options: ["Mirada coqueta y sonrisa 👀", "Confianza y buen humor 😏", "Elegancia con un toque atrevido 💋", "Naturalidad y complicidad ❤️"] },
+  { id: "intimacy-couple-dynamic", question: "En un momento íntimo consensuado en pareja, ¿qué dinámica te atrae más?", options: ["Tomar la iniciativa 🔥", "Turnarse y sorprenderse 👀", "Jugar y reírse juntos 😏", "Ir con calma y hablarlo ❤️"] },
+  { id: "intimacy-couple-pace", question: "¿Qué ritmo prefieres para crear tensión romántica entre adultos?", options: ["Coqueteo lento y miradas 👀", "Una invitación directa 😏", "Sorpresas acordadas 🔥", "Conversar y ver qué apetece 💜"] },
+  { id: "intimacy-couple-surprise", question: "¿Qué sorpresa consensuada te parece más tentadora en una cita adulta?", options: ["Un plan romántico inesperado ❤️", "Un mensaje coqueto durante el día 💌", "Un look especial para la ocasión ✨", "Elegir juntos el plan 😏"] },
+  { id: "intimacy-couple-initiation", question: "¿Qué te parece más atractivo cuando hay interés mutuo entre adultos?", options: ["Que alguien dé el primer paso 🔥", "Las señales coquetas de ambos 👀", "Una invitación clara y respetuosa 💬", "Dejar que la química marque el ritmo ❤️"] },
+  { id: "intimacy-fantasy-setting", question: "Si compartieras una fantasía consensuada con otra persona adulta, ¿qué ambiente elegirías?", options: ["Una escapada romántica 🌙", "Una cita con mucho coqueteo 😏", "Un plan espontáneo y divertido ✨", "Algo íntimo hablado de antemano 💜"] },
+  { id: "intimacy-erotic-photo", question: "¿Qué estilo de fotografía sugerente para adultos te parece más atractivo?", options: ["Retratos con una mirada intensa 👀", "Una sesión elegante y artística 🎨", "Un toque juguetón y coqueto 😏", "Prefiero no consumir contenido adulto 🌿"] },
+  { id: "intimacy-erotic-video", question: "Al elegir videos eróticos para adultos, ¿qué estilo prefieres?", options: ["Una historia romántica 💞", "Un tono sensual y sugerente 🔥", "Algo espontáneo y auténtico ✨", "No suelo ver ese contenido 🌿"] },
+  { id: "intimacy-content-exclusive", question: "¿Qué te gustaría encontrar en contenido adulto exclusivo?", options: ["Fotos atrevidas y cuidadas 📸", "Videos eróticos 🎥", "Una propuesta personalizada 💋", "Una combinación variada 🔥"] },
+  { id: "intimacy-content-creator-style", question: "¿Qué estilo de una creadora adulta te despierta más curiosidad?", options: ["Glamuroso y elegante ✨", "Coqueto y divertido 😏", "Sensual y sugerente 🔥", "Cercano y auténtico 💜"] },
+  { id: "intimacy-private-format", question: "Si eliges contenido adulto personalizado, ¿qué formato te llama más?", options: ["Una sesión de fotos 📸", "Un video con una idea acordada 🎥", "Un audio coqueto 🎧", "Prefiero contenido general 🌿"] },
+  { id: "intimacy-romantic-sexual-style", question: "¿Qué combinación te parece más atractiva en una relación adulta?", options: ["Romance con un toque picante ❤️🔥", "Humor y coqueteo 😏", "Confianza y espontaneidad ✨", "Comunicación directa y cariño 💜"] },
+  { id: "intimacy-boundary-flirt", question: "¿Qué hace que un coqueteo entre adultos se sienta atrevido y cómodo a la vez?", options: ["Interés mutuo 👀", "Preguntar y respetar los límites 💜", "Humor y complicidad 😏", "Poder decir que no sin presión 🌿"] },
+];
+
+const SCHEDULED_MARKET_POLLS: ScheduledPollTemplate[] = [
+  { id: "market-trust-before-buy", question: "¿Qué te daría más confianza antes de comprar contenido exclusivo para adultos?", options: ["Ver un perfil verificado ✅", "Conocer exactamente qué incluye 📋", "Leer referencias auténticas ⭐", "Usar un método de pago seguro 🔒"] },
+  { id: "market-custom-content", question: "Al comprar contenido personalizado para adultos, ¿qué aspecto considerarías más importante?", options: ["Que respete tus preferencias 💜", "Que sea realmente exclusivo ✨", "Que tenga buena calidad 🎥", "Acordar condiciones antes 📝"] },
+  { id: "market-creator-choice", question: "¿Qué valoras más al elegir a una creadora adulta?", options: ["Su estilo y propuesta 🎨", "La calidad de sus publicaciones 🎬", "Su autenticidad ✨", "La claridad de las condiciones 📋"] },
+  { id: "market-subscription", question: "¿Qué modalidad de acceso a contenido adulto prefieres?", options: ["Compra individual 💳", "Suscripción mensual 🔐", "Contenido exclusivo por encargo 💌", "No suelo pagar por este contenido 🌿"] },
+  { id: "market-security", question: "¿Qué te preocupa más al comprar contenido digital para adultos?", options: ["La privacidad de mis datos 🔒", "La seguridad del pago 🛡️", "Recibir lo que se anunció 📋", "El uso posterior del contenido 💜"] },
+  { id: "market-format", question: "Si decides comprar contenido adulto, ¿qué formato te interesa más?", options: ["Sets de fotografías 📸", "Videos 🎥", "Audios o relatos 🎧", "Contenido personalizado 💌"] },
+  { id: "market-price-clarity", question: "¿Qué información debería estar clara antes de pagar por contenido exclusivo para adultos?", options: ["Precio total y método de pago 💳", "Formato y cantidad incluidos 📋", "Si hay renovación automática 🔁", "Política de privacidad 🔒"] },
+  { id: "market-creator-conditions", question: "Para quien crea y vende contenido adulto digital, ¿qué condición protege mejor a ambas partes?", options: ["Alcance del encargo por escrito 📝", "Pago y entrega acordados 💳", "Límites de uso definidos 🔒", "Comunicación respetuosa 💜"] },
+  { id: "market-exclusive", question: "¿Qué te haría considerar una suscripción a contenido adulto exclusivo?", options: ["Publicaciones nuevas con frecuencia 🗓️", "Un estilo que realmente me interesa ✨", "Condiciones fáciles de cancelar 🔓", "Prefiero compras puntuales 💳"] },
+  { id: "market-subscription-creator", question: "¿Qué te animaría a suscribirte al contenido de una creadora adulta?", options: ["Un estilo que encaje con mis gustos ✨", "Novedades exclusivas con regularidad 🔥", "Una suscripción fácil de cancelar 🔓", "Prefiero compras puntuales 💳"] },
+  { id: "market-content-menu", question: "¿Qué variedad te gustaría ver en una oferta de contenido adulto?", options: ["Sets de fotos sugerentes 📸", "Videos exclusivos 🎥", "Pedidos personalizados 💋", "Una mezcla de formatos 🔥"] },
+  { id: "market-buyer-experience", question: "¿Qué hace que una compra de contenido adulto sea una buena experiencia?", options: ["Recibir lo que se describió 📋", "Privacidad durante el proceso 🔒", "Condiciones claras desde el inicio ✅", "Un trato respetuoso 💜"] },
+  { id: "market-creator-boundaries", question: "Para una creadora adulta, ¿qué límite debería quedar claro antes de aceptar un pedido?", options: ["Qué tipo de contenido se hará 💬", "Qué usos se permiten 🔒", "Precio y plazo de entrega 💳", "Todo lo anterior, acordado con claridad ✅"] },
+  { id: "market-creator-format", question: "Si crearas contenido adulto, ¿qué formato te interesaría ofrecer?", options: ["Fotografías con estilo propio 📸", "Videos exclusivos 🎥", "Contenido personalizado 💌", "Una suscripción con varias opciones 🔐"] },
+  { id: "market-custom-brief", question: "Antes de encargar contenido personalizado para adultos, ¿qué conviene acordar?", options: ["La idea y el formato 📝", "El precio y la entrega 💳", "Los límites de uso 🔒", "Todo, sin dejar dudas ✅"] },
+  { id: "market-privacy-choice", question: "Al suscribirte a contenido adulto, ¿qué detalle de privacidad valoras más?", options: ["Que el pago sea discreto 🔒", "Que no compartan mis datos 🛡️", "Poder cancelar fácilmente 🔓", "Saber cómo se protege mi cuenta ✅"] },
+  { id: "market-exclusive-choice", question: "¿Qué tipo de acceso a contenido adulto exclusivo te atrae más?", options: ["Una compra única 💳", "Una suscripción mensual 🔐", "Un pedido personalizado 💌", "Solo contenido gratuito 🌿"] },
+];
+
+const SCHEDULED_GENERAL_POLLS: ScheduledPollTemplate[] = [
+  { id: "general-kindness", question: "¿Qué ayuda más a que una comunidad en línea sea agradable para todos?", options: ["Respeto al conversar 💬", "Privacidad de cada persona 🔒", "Humor sin atacar a nadie 😄", "Poder participar sin presión 🌿"] },
+  { id: "general-free-time", question: "Cuando tienes un rato libre, ¿qué plan sencillo prefieres?", options: ["Escuchar música 🎧", "Ver una película 🎬", "Salir a caminar 🌳", "Descansar en casa ☕"] },
+  { id: "general-recommendation", question: "¿Qué hace que una recomendación de la comunidad te resulte útil?", options: ["Que sea sincera ✨", "Que explique la experiencia 📋", "Que respete distintos gustos 💜", "Que no presione a comprar 🌿"] },
+  { id: "general-chat", question: "¿Qué tema ligero te gusta para iniciar una conversación?", options: ["Viajes y lugares 🌍", "Música y series 🎶", "Comida favorita 🍰", "Ideas para el fin de semana ☀️"] },
+  { id: "general-community", question: "¿Qué detalle mejora más la convivencia en un grupo?", options: ["Escuchar antes de responder 👂", "Evitar compartir datos ajenos 🔒", "Dar espacio a distintas opiniones 💬", "Mantener un tono amable ❤️"] },
+  { id: "general-learning", question: "¿Qué habilidad te gustaría aprender por curiosidad?", options: ["Cocinar algo nuevo 🍳", "Tomar mejores fotografías 📸", "Aprender un idioma 🌎", "Tocar un instrumento 🎸"] },
+  { id: "general-weekend", question: "¿Cuál sería tu plan ideal para un día libre?", options: ["Una salida tranquila 🌿", "Una tarde de series 🎬", "Probar un lugar nuevo 🍽️", "Descansar sin horarios ☁️"] },
+  { id: "general-digital-safety", question: "¿Qué hábito te ayuda más a sentirte seguro en internet?", options: ["Usar contraseñas distintas 🔐", "Revisar antes de compartir 🛡️", "Cuidar la información personal 🔒", "Pedir permiso antes de publicar fotos ✅"] },
+  { id: "general-mood", question: "¿Qué suele mejorar tu ánimo en un día complicado?", options: ["Hablar con alguien de confianza 💬", "Salir un momento al aire libre 🌳", "Escuchar algo que te gusta 🎶", "Tomarte una pausa ☕"] },
+  { id: "general-entertainment", question: "¿Qué formato de entretenimiento eliges con más frecuencia?", options: ["Películas o series 🎬", "Podcasts y audio 🎧", "Libros o relatos 📚", "Videos cortos 📱"] },
+];
+
+function chooseScheduledTemplate(
+  templates: readonly ScheduledPollTemplate[],
+  randomValue: number,
+  salt: string,
+  recentTemplateIds: readonly string[],
+): ScheduledPollTemplate {
+  const recent = new Set(recentTemplateIds);
+  const start = Math.min(
+    templates.length - 1,
+    Math.floor(Math.min(0.999999, Math.max(0, randomValue)) * templates.length),
+  );
+  const saltOffset = salt ? entertainmentSaltIndex(salt) % templates.length : 0;
+  for (let offset = 0; offset < templates.length; offset += 1) {
+    const candidate = templates[(start + saltOffset + offset) % templates.length]!;
+    if (!recent.has(candidate.id)) return candidate;
+  }
+  return templates[(start + saltOffset) % templates.length]!;
+}
+
+export function scheduledAdultPollTheme(
+  recentThemes: readonly ScheduledPollTheme[],
+): ScheduledPollTheme {
+  const recent = recentThemes.slice(-10);
+  if (recent.length < 10) {
+    const targetMarket = Math.floor((recent.length + 1) * 0.3);
+    const currentMarket = recent.filter((theme) => theme === "market").length;
+    return currentMarket < targetMarket ? "market" : "intimacy";
+  }
+  return recent.filter((theme) => theme === "market").length < 3
+    ? "market"
+    : "intimacy";
+}
+
+export function scheduledPollContent(
+  topic: AfroditaTopic,
+  allowAdultContent: boolean,
+  randomValue = Math.random(),
+  salt = "",
+  recentTemplateIds: readonly string[] = [],
+  recentThemes: readonly ScheduledPollTheme[] = [],
+): ScheduledPollContent {
+  const theme = allowAdultContent
+    ? scheduledAdultPollTheme(recentThemes)
+    : undefined;
+  const templates = theme === "intimacy"
+    ? SCHEDULED_INTIMACY_POLLS
+    : theme === "market"
+      ? SCHEDULED_MARKET_POLLS
+      : SCHEDULED_GENERAL_POLLS;
+  const selected = chooseScheduledTemplate(
+    templates,
+    randomValue,
+    salt,
+    recentTemplateIds,
+  );
+  return {
+    question: selected.question,
+    options: selected.options,
+    topics: selected.options.map(() => topic),
+    templateId: selected.id,
+    ...(theme ? { pollTheme: theme, adult: true as const } : {}),
+  };
+}
+
 /**
  * Mezcla encuesta comunitaria (existente) con encuesta adulta general.
  * randomValue < 0.5 conserva el comportamiento original exacto.
@@ -569,9 +727,8 @@ export function boldFlirtReply(
  * Para randomValue=0 devuelve exactamente catalogReply("general", 0).
  */
 /**
- * Promoción personalizada atrevida sobre una verificada YA autorizada
- * (`authorizedProfiles` + `promotionConsents`). Usa su @username real si está
- * registrado; nunca inventa usernames. Sin salt, elige por `randomValue`.
+ * Presentación juguetona de un perfil autorizado sin atribuirle rasgos físicos
+ * ni convertir su username en una insinuación sexual.
  */
 export function boldProfilePromotion(
   profile: { displayName: string; username?: string },
@@ -583,16 +740,16 @@ export function boldProfilePromotion(
     : plainProfileName(profile.displayName);
   if (!label) return "";
   const lines = [
-    `Uy, ¿ya vieron a ${label}? 😏 Esa tiene unas curvas que no pasan desapercibidas. 🔥`,
-    `${label} está dando de qué hablar hoy 😈 ¡Qué cuerpazo el que se gasta! 💋`,
-    `A ver, ¿qué les llama más la atención de ${label}: las caderas, las piernas o esas curvas de película? 🔥`,
-    `${label} no necesita permiso de nadie para lucirse 😏 ¡Qué nalgas y qué actitud!`,
-    `Pregunta coqueta: ¿quién le ha escrito ya a ${label}? 😈 Esa sensualidad se nota a kilómetros. 🔥`,
-    `Hoy toca destacar a ${label} 💋 Con esas piernas y ese cuerpazo, claro que enciende el grupo. 😏`,
-    `${label} es de las que dejan a todos sin palabras 😈 Curvas, sonrisa coqueta y mucha actitud. 🔥`,
-    `No se pueden ignorar las curvas de ${label} 💋 ¿Quién opina que es la más sensual del grupo? 😏`,
-    `¿Ya vieron la actitud de ${label}? 😈 Caderas, piernas y un cuerpazo que enloquece. 🔥`,
-    `${label} prende el grupo solo con aparecer 😏 ¡Qué nalgas, qué curvas, qué mujer! 💋`,
+    `🔥 Hay perfil verificado nuevo en el radar: ${label} 😏 Descubre lo que decidió compartir; con respeto, siempre 💋`,
+    `👀 Pausa el scroll: ${label} tiene un perfil autorizado para este grupo. Curiosea sin presión y con buena onda 💜`,
+    `😏 Novedad para descubrir: ${label} cuenta con perfil verificado aquí. La curiosidad sí; invadir la privacidad, no 🔒`,
+    `💋 Se suma un perfil al radar del grupo: ${label}. Pasa a conocer su espacio y respeta sus límites ✨`,
+    `🔥 ¿Quién anda con curiosidad? ${label} tiene un perfil verificado autorizado. Un saludo amable siempre suma 😏`,
+    `👀 Hay novedad por aquí: ${label} decidió compartir su perfil verificado. Descúbrelo a tu ritmo 💜`,
+    `✨ El radar suma un perfil verificado: ${label}. Mira solo lo que eligió publicar y mantén la buena vibra 😏`,
+    `😈 No prometemos chisme, pero sí novedad: ${label} tiene perfil autorizado para este grupo. Pasen con respeto 💋`,
+    `💜 Una nueva presentación para animar el ambiente: ${label}, con perfil verificado y autorización vigente 👀`,
+    `🔥 Se abre una nueva opción para descubrir: ${label} cuenta con perfil verificado aquí. Sin presión, con respeto 😏`,
   ];
   const offset = salt ? entertainmentSaltIndex(salt) % lines.length : 0;
   const base = Math.min(lines.length - 1, Math.max(0, Math.floor(randomValue * lines.length)));

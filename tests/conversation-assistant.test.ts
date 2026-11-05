@@ -6,6 +6,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { Bot } from "grammy";
 import { createAfroditaApplication } from "../src/bot.js";
+import { AfroditaActivityControl } from "../src/activity-control.js";
 import { loadAfroditaConfig } from "../src/config.js";
 import { GroupConversationContext } from "../src/conversation-context.js";
 import { generateReply } from "../src/generator.js";
@@ -122,6 +123,39 @@ test("commercial inquiries use the configured LLM and never consult or publish t
       scheduler: null,
       fetcher,
       shutdownSignals: new EventEmitter(),
+    });
+
+    test("global pause blocks conversational replies before any AI or Telegram request", async () => {
+      await withStore(async (store) => {
+        const bot = new ConversationBot();
+        const activityControl = new AfroditaActivityControl("paused");
+        const config = loadAfroditaConfig({
+          AFRODITA_BOT_TOKEN: TOKEN,
+          AFRODITA_AI_CHAT_COMPLETIONS_URL: "https://llm.example/v1/chat/completions",
+          AFRODITA_AI_API_KEY: "test-key",
+          AFRODITA_AI_MODEL: "test-model",
+        });
+        let fetchCalls = 0;
+        await store.setEnabled(CHAT_ID, true);
+        createAfroditaApplication({
+          config,
+          bot,
+          store,
+          scheduler: null,
+          activityControl,
+          fetcher: async () => {
+            fetchCalls += 1;
+            throw new Error("AI_MUST_NOT_BE_CALLED");
+          },
+          shutdownSignals: new EventEmitter(),
+        });
+
+        await bot.handleUpdate(textUpdate(77, "@afrodita_test hola"));
+
+        assert.equal(fetchCalls, 0);
+        assert.equal(bot.sent.length, 0);
+        assert.equal((await store.loadGroup(CHAT_ID)).messageCount, 0);
+      });
     });
 
     await bot.handleUpdate(textUpdate(1, "¿Tienen videollamadas?"));

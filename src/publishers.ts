@@ -1,12 +1,14 @@
 import type { Api } from "grammy";
 import type { AfroditaConfig } from "./config.js";
 import {
-  boldProfilePromotion,
   entertainmentLineReply,
-  entertainmentPollContent,
-  saltedRandomValue,
-  verifiedModelsPollContent,
+  scheduledPollContent,
 } from "./messages.js";
+import {
+  MAX_SCHEDULED_POLL_INTERVAL_MS,
+  nextScheduledPollWindowTime,
+  scheduledPollIntervalMs,
+} from "./poll-schedule.js";
 import { seasonalPollForDate } from "./seasonal-campaigns.js";
 import { localDateTime } from "./time.js";
 import {
@@ -29,6 +31,8 @@ export interface PollPublication {
   adult?: true;
   subjectUserIds?: number[];
   mentionedUserIds?: number[];
+  templateId?: string;
+  pollTheme?: "intimacy" | "market";
 }
 
 export interface EligiblePromotionProfile {
@@ -48,6 +52,8 @@ export interface ProfilePromotionMessage {
   }>;
 }
 
+const PROFILE_PRESENTATION_TEMPLATE_COUNT = 12;
+
 export function createProfilePromotionMessage(
   profile: EligiblePromotionProfile,
   templateIndex: number,
@@ -64,14 +70,18 @@ export function createProfilePromotionMessage(
   if (!safeName) return undefined;
 
   const templates = [
-    `🌸 Hoy damos la bienvenida al perfil verificado de ${safeName}, autorizado para este grupo. Puedes conocer solo la información que decidió compartir.`,
-    `✨ Una nueva presentación para la comunidad: ${safeName} tiene un perfil verificado y autorizado aquí. La decisión de qué publicar es siempre suya.`,
-    `👋 Si aún no lo conocías, ${safeName} cuenta con un perfil verificado autorizado en este grupo. Acércate con respeto y consulta únicamente lo que publicó.`,
-    `💫 Espacio para descubrir perfiles con calma: ${safeName} cuenta con un perfil verificado autorizado para este grupo. Cada detalle compartido depende de esa persona.`,
-    `🌿 Presentación de hoy: ${safeName}, perfil verificado con autorización para este grupo. Sin suposiciones; solo vale lo que eligió hacer público.`,
-    `🧡 La comunidad también se construye con presentaciones respetuosas. ${safeName} tiene un perfil verificado autorizado para este grupo.`,
-    `🔎 ¿Te gusta descubrir perfiles nuevos? ${safeName} cuenta con un perfil verificado autorizado aquí; revisa únicamente la información que publicó.`,
-    `🌟 Damos un espacio a ${safeName}, con perfil verificado y autorización vigente en el grupo. La conversación y el interés deben ser siempre respetuosos.`,
+    `🔥 ¡Se suma un perfil verificado al radar del grupo: ${safeName}! 👀 Descubre lo que decidió compartir; con respeto, siempre 💋`,
+    `😏 Hoy toca novedad: ${safeName} tiene un perfil autorizado para este grupo. Curiosea sin presión y con buena onda 💜`,
+    `👀 Pausa el scroll: ${safeName} cuenta con un perfil verificado aquí. La curiosidad sí; invadir la privacidad, no 🔒`,
+    `💋 Nuevo perfil para descubrir: ${safeName}, con autorización vigente para el grupo. Pasa a conocer su espacio ✨`,
+    `🔥 ¿Quién anda con curiosidad? ${safeName} tiene un perfil verificado autorizado. Un saludo amable siempre suma 😏`,
+    `✨ El radar suma una nueva presentación: ${safeName} decidió compartir su perfil verificado. Descúbrelo a tu ritmo 💜`,
+    `😈 No prometemos chisme, pero sí novedad: ${safeName} cuenta con perfil autorizado aquí. Pasen con respeto 💋`,
+    `💜 Una nueva presentación para animar el ambiente: ${safeName}, con perfil verificado y autorización vigente 👀`,
+    `🌶️ Subimos un poquito el misterio: ${safeName} tiene un perfil verificado para este grupo. Cero presión, pura buena vibra 😏`,
+    `💌 ¿Te gusta descubrir perfiles a tu ritmo? ${safeName} cuenta con verificación y permiso para este espacio. Respeto primero 👀`,
+    `🎉 Hay novedad en el grupo: ${safeName} tiene un perfil verificado autorizado. Pasen a conocer lo que eligió compartir 💋`,
+    `👋 Denle una bienvenida con buena onda a ${safeName}, perfil verificado autorizado para este grupo. La curiosidad va con respeto 💜`,
   ];
   const text = templates[((templateIndex % templates.length) + templates.length) % templates.length]!;
   if (!profile.mention) return { text, entities: [] };
@@ -169,7 +179,20 @@ export async function publishPoll(
   category: "commercial_poll" | "seasonal_campaign",
   content: PollPublication,
   trigger: PublicationTrigger,
+  canPublish: () => boolean = () => true,
 ): Promise<boolean> {
+  if (!canPublish()) return false;
+  if (
+    content.question.length === 0 ||
+    content.question.length > 300 ||
+    content.options.length < 2 ||
+    content.options.length > 12 ||
+    content.options.some((option) => option.length === 0 || option.length > 100) ||
+    new Set(content.options).size !== content.options.length
+  ) {
+    console.warn(`[AFRODITA] Se omite encuesta inválida para Telegram groupId=${chatId}.`);
+    return false;
+  }
   const state = await store.loadGroup(chatId);
   if (content.adult && !state.adultConfirmedAt) return false;
   if (
@@ -184,11 +207,16 @@ export async function publishPoll(
     store,
     chatId,
     category,
-    trigger,
+    {
+      ...trigger,
+      ...(content.templateId ? { templateId: content.templateId } : {}),
+      ...(content.pollTheme ? { pollTheme: content.pollTheme } : {}),
+    },
   );
   if (!reservation) return false;
   const latestState = await store.loadGroup(chatId);
   if (
+    !canPublish() ||
     content.adult && !latestState.adultConfirmedAt
   ) {
     await finalizePublication(store, reservation, "failed");
@@ -228,6 +256,16 @@ export async function publishPoll(
     await store.updateGroup(chatId, (state) => {
       state.pollCount += 1;
       state.lastPollTopic = content.topics[0] ?? "general";
+      const interval = Math.max(
+        scheduledPollIntervalMs(),
+        state.publications.commercial_poll.minIntervalMs,
+      );
+      state.publications.commercial_poll.nextScheduledAt =
+        nextScheduledPollWindowTime(
+          Date.now() + interval,
+          state.timeZone,
+          state.publications.commercial_poll.scheduleTimes,
+        ) ?? Date.now() + MAX_SCHEDULED_POLL_INTERVAL_MS;
     });
   } catch (error) {
     console.error(
@@ -244,7 +282,9 @@ export async function publishProfilePromotion(
   profile: EligiblePromotionProfile,
   trigger: PublicationTrigger,
   templateIndex: number,
+  canPublish: () => boolean = () => true,
 ): Promise<boolean> {
+  if (!canPublish()) return false;
   const state = await store.loadGroup(chatId);
   const authorizedProfile = state.authorizedProfiles[String(profile.userId)];
   if (!authorizedProfile) {
@@ -255,21 +295,33 @@ export async function publishProfilePromotion(
   }
   const consent = state.contentConsents[String(profile.userId)];
   if (!consent?.catalog.granted) return false;
+  const previousPresentation = [...state.publications.verified_promotion.history]
+    .reverse()
+    .find((entry) =>
+      entry.status === "published" &&
+      /^profile-presentation-\d+$/u.test(entry.templateId ?? ""),
+    );
+  const previousIndex = previousPresentation?.templateId
+    ? Number(previousPresentation.templateId.slice("profile-presentation-".length))
+    : undefined;
+  const presentationIndex = previousIndex !== undefined &&
+      Number.isSafeInteger(previousIndex)
+    ? (previousIndex + 1) % PROFILE_PRESENTATION_TEMPLATE_COUNT
+    : templateIndex;
+  const presentationId = `profile-presentation-${presentationIndex}`;
   const currentProfile = {
     ...profile,
     mention: consent.mention.granted,
-    body: consent.body.granted,
   };
-  const message = createProfilePromotionMessage(
+  const initialMessage = createProfilePromotionMessage(
     {
       userId: authorizedProfile.userId,
       displayName: authorizedProfile.displayName,
       mention: currentProfile.mention,
-      body: currentProfile.body,
     },
-    templateIndex,
+    presentationIndex,
   );
-  if (!message) {
+  if (!initialMessage) {
     console.warn(
       `[AFRODITA] Se omite promoción groupId=${chatId}: identidad de Telegram inválida.`,
     );
@@ -279,37 +331,39 @@ export async function publishProfilePromotion(
     store,
     chatId,
     "verified_promotion",
-    trigger,
+    { ...trigger, templateId: presentationId },
   );
   if (!reservation) return false;
   try {
     const latestState = await store.loadGroup(chatId);
-    const latestConsent = latestState.contentConsents[String(profile.userId)];
-    if (!latestConsent?.catalog.granted) {
+    if (!canPublish()) {
       await finalizePublication(store, reservation, "failed");
       return false;
     }
-    const boldText =
-      latestState.adultConfirmedAt &&
-      latestConsent.body.granted &&
-      templateIndex % 2 === 1
-        ? boldProfilePromotion(
-            {
-              displayName: authorizedProfile.displayName,
-              ...(latestConsent.mention.granted && authorizedProfile.username
-                ? { username: authorizedProfile.username }
-                : {}),
-            },
-            Math.random(),
-            `${profile.userId}:${templateIndex}`,
-          )
-        : "";
+    const latestConsent = latestState.contentConsents[String(profile.userId)];
+    const latestProfile = latestState.authorizedProfiles[String(profile.userId)];
+    if (!latestConsent?.catalog.granted || !latestProfile) {
+      await finalizePublication(store, reservation, "failed");
+      return false;
+    }
+    const latestMessage = createProfilePromotionMessage(
+      {
+        userId: latestProfile.userId,
+        displayName: latestProfile.displayName,
+        mention: latestConsent.mention.granted,
+      },
+      presentationIndex,
+    );
+    if (!latestMessage) {
+      await finalizePublication(store, reservation, "failed");
+      return false;
+    }
     await api.sendMessage(
       chatId,
-      boldText || message.text,
-      boldText || !latestConsent.mention.granted || message.entities.length === 0
+      latestMessage.text,
+      latestMessage.entities.length === 0
         ? {}
-        : { entities: message.entities },
+        : { entities: latestMessage.entities },
     );
   } catch (error) {
     const outcome = classifyPublicationFailure(error);
@@ -344,7 +398,9 @@ export async function publishCommunityReply(
   chatId: number,
   userId?: number,
   beforeSend?: () => Promise<boolean>,
+  canPublish: () => boolean = () => true,
 ): Promise<boolean> {
+  if (!canPublish()) return false;
   const trigger: PublicationTrigger = { kind: "activity", ...(userId ? { userId } : {}) };
   const reservation = await reservePublication(
     store,
@@ -354,7 +410,15 @@ export async function publishCommunityReply(
   );
   if (!reservation) return false;
   try {
+    if (!canPublish()) {
+      await finalizePublication(store, reservation, "failed");
+      return false;
+    }
     if (beforeSend && !await beforeSend()) {
+      await finalizePublication(store, reservation, "failed");
+      return false;
+    }
+    if (!canPublish()) {
       await finalizePublication(store, reservation, "failed");
       return false;
     }
@@ -379,68 +443,42 @@ export async function publishScheduledJob(
   slotKey: string,
   config: Pick<AfroditaConfig, "supabaseUrl" | "supabaseKey">,
   fetcher: typeof fetch = fetch,
-): Promise<void> {
+  canPublish: () => boolean = () => true,
+): Promise<boolean> {
+  if (!canPublish()) return false;
   const trigger: PublicationTrigger = { kind: "scheduled", slotKey };
   if (category === "commercial_poll" || category === "seasonal_campaign") {
     const state = await store.loadGroup(chatId);
     const seasonal = category === "seasonal_campaign";
-    if (seasonal && !state.publications.seasonal_campaign.enabled) return;
+    if (seasonal && !state.publications.seasonal_campaign.enabled) return false;
     const now = Date.now();
     const localDate = localDateTime(now, state.timeZone).date;
     const seasonalContent = seasonal
       ? seasonalPollForDate(localDate)
       : undefined;
-    if (seasonal && !seasonalContent) return;
+    if (seasonal && !seasonalContent) return false;
     let regularContent: PollPublication & { id?: string } | undefined = seasonalContent;
     if (!regularContent) {
-      regularContent = entertainmentPollContent(
+      const recentPolls = state.publications.commercial_poll.history
+        .filter((entry) => entry.status === "published" && entry.templateId)
+        .slice(-10);
+      regularContent = scheduledPollContent(
         "general",
+        state.adultConfirmedAt !== undefined,
         Math.random(),
         slotKey,
-        state.adultConfirmedAt !== undefined,
+        recentPolls.slice(-10).flatMap((entry) =>
+          entry.templateId ? [entry.templateId] : [],
+        ),
+        recentPolls.flatMap((entry) =>
+          entry.pollTheme ? [entry.pollTheme] : [],
+        ),
       );
-      // Personalización: si hay perfiles YA autorizados, alterna encuesta
-      // sobre perfiles con la encuesta general (sin nuevas autorizaciones).
-      try {
-        const eligible = await resolvePromotionProfiles(
-          store,
-          api,
-          chatId,
-          config,
-          fetcher,
-          "polls",
-        );
-        if (eligible.length > 0) {
-          const varied = saltedRandomValue(Math.random(), slotKey);
-          if (varied < 0.5) {
-            const latestState = await store.loadGroup(chatId);
-            regularContent = verifiedModelsPollContent(
-              "general",
-              eligible.map((candidate) => {
-                const profile = latestState.authorizedProfiles[String(candidate.userId)];
-                return {
-                  groupId: chatId,
-                  userId: candidate.userId,
-                  displayName: candidate.displayName,
-                  ...(candidate.mention && profile?.username
-                    ? { username: profile.username }
-                    : {}),
-                  media: [],
-                };
-              }),
-              varied,
-            );
-          }
-        }
-      } catch {
-        // Sin perfiles elegibles se conserva la encuesta comunitaria.
-      }
     }
-    await publishPoll(api, store, chatId, category, {
+    return await publishPoll(api, store, chatId, category, {
       ...regularContent,
       scheduledKey: slotKey,
-    }, trigger);
-    return;
+    }, trigger, canPublish);
   }
   if (category === "community_reply") {
     const reservation = await reservePublication(
@@ -449,9 +487,17 @@ export async function publishScheduledJob(
       category,
       trigger,
     );
-    if (!reservation) return;
+    if (!reservation) return false;
     try {
+      if (!canPublish()) {
+        await finalizePublication(store, reservation, "failed");
+        return false;
+      }
       const state = await store.loadGroup(chatId);
+      if (!canPublish()) {
+        await finalizePublication(store, reservation, "failed");
+        return false;
+      }
       await api.sendMessage(
         chatId,
         entertainmentLineReply(
@@ -461,6 +507,7 @@ export async function publishScheduledJob(
         ),
       );
       await finalizePublication(store, reservation, "published");
+      return true;
     } catch (error) {
       await finalizePublication(
         store,
@@ -469,7 +516,7 @@ export async function publishScheduledJob(
       );
       throw error;
     }
-    return;
+    return false;
   }
   if (category === "verified_promotion") {
     const state = await store.loadGroup(chatId);
@@ -486,7 +533,7 @@ export async function publishScheduledJob(
       await store.updatePublicationSettings(chatId, category, (settings) => {
         settings.history = settings.history.slice(-60);
       });
-      return;
+      return false;
     }
     const promotionTrigger: PublicationTrigger = {
       kind: "scheduled",
@@ -500,11 +547,14 @@ export async function publishScheduledJob(
       profile,
       promotionTrigger,
       state.publications.verified_promotion.history.length,
+      canPublish,
     );
     if (!published) {
       console.info(`[AFRODITA] Publicación promocional omitida groupId=${chatId}.`);
     }
+    return published;
   }
+  return false;
 }
 
 export function isDefinitiveTelegramFailure(error: unknown): boolean {

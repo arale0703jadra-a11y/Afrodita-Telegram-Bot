@@ -107,14 +107,15 @@ test("se requieren lista local, permiso granular, verificación vigente y membre
   }
 });
 
-test("la promoción atrevida usa usernames reales y nunca inventa", () => {
+test("la presentación juguetona usa usernames reales sin atribuir rasgos físicos", () => {
   const withUsername = boldProfilePromotion(
     { displayName: "Ana", username: "ana_hot" },
     0.3,
     "salt-a",
   );
   assert.match(withUsername, /@ana_hot/u);
-  assert.match(withUsername, /(curvas|cuerpazo|nalgas|caderas|piernas)/u);
+  assert.match(withUsername, /privacidad|respeto|decidi[oó] compartir/u);
+  assert.doesNotMatch(withUsername, /curvas|cuerpazo|nalgas|caderas|piernas|escote/u);
   const noUsername = boldProfilePromotion({ displayName: "Luz María" }, 0.4, "b");
   assert.match(noUsername, /Luz María/u);
   assert.ok(!/@Luz/u.test(noUsername));
@@ -128,7 +129,7 @@ test("la promoción atrevida usa usernames reales y nunca inventa", () => {
   assert.ok(variants.size >= 2, "el salt alterna expresiones");
 });
 
-test("publishProfilePromotion alterna suave y atrevido con autorización vigente", async () => {
+test("publishProfilePromotion mantiene el tono juguetón sin convertir el permiso body en comentarios físicos", async () => {
   const makeStore = async () => {
     const dir = await mkdtemp(join(tmpdir(), "afrodita-auto-5-"));
     const store = new AfroditaStore(dir);
@@ -160,8 +161,9 @@ test("publishProfilePromotion alterna suave y atrevido con autorización vigente
     const triggerB: PublicationTrigger = { kind: "activity", userId: 505 };
     const bold = await publishProfilePromotion(api, second.store, -100205, profile, triggerB, 1);
     assert.equal(bold, true);
-    assert.equal(sent[1]?.hasEntities, false, "índice impar: texto atrevido sin entities");
-    assert.match(sent[1]?.text ?? "", /(curvas|cuerpazo|nalgas|@ari_sexy)/u);
+    assert.equal(sent[1]?.hasEntities, true, "la mención depende del permiso mention");
+    assert.match(sent[1]?.text ?? "", /😏|🔥|💋|👀/u);
+    assert.doesNotMatch(sent[1]?.text ?? "", /curvas|cuerpazo|nalgas|caderas|piernas|escote|@ari_sexy/u);
   } finally {
     await rm(second.dir, { recursive: true, force: true });
   }

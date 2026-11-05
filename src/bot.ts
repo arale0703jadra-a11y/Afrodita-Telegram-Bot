@@ -2,6 +2,7 @@ import type { EventEmitter } from "node:events";
 import { Bot } from "grammy";
 import type { Context } from "grammy";
 import { observeMessage } from "./analytics.js";
+import { AfroditaActivityControl } from "./activity-control.js";
 import type { AfroditaConfig } from "./config.js";
 import { decideAction } from "./decision.js";
 import { safeErrorSummary, safeErrorType } from "./errors.js";
@@ -369,12 +370,14 @@ async function publishDecision(
   },
   fetcher: typeof fetch,
   conversationContext: GroupConversationContext,
+  activityControl: AfroditaActivityControl,
 ): Promise<void> {
-  if (!isGroup(ctx) || !ctx.message) return;
+  if (!activityControl.isRunning() || !isGroup(ctx) || !ctx.message) return;
   const groupState = await store.loadGroup(ctx.chat.id);
   const adultAllowed = groupState.adultConfirmedAt !== undefined;
 
   if (decision.action === "reply" || decision.action === "participate") {
+    if (!activityControl.isRunning()) return;
     if (!await mayUseConversation(ctx, aiConfig, fetcher)) return;
     const source = decision.action === "reply"
       ? removeBotMention(ctx.message.text ?? ctx.message.caption ?? "", botUsername)
@@ -395,8 +398,12 @@ async function publishDecision(
       reply_to_message_id: decision.action === "reply"
         ? ctx.message!.message_id
         : undefined,
-    }), store, ctx.chat.id, ctx.from?.id, () =>
-      mayUseConversation(ctx, aiConfig, fetcher));
+    }), store, ctx.chat.id, ctx.from?.id,
+    async () =>
+      activityControl.isRunning() &&
+      await mayUseConversation(ctx, aiConfig, fetcher),
+    () => activityControl.isRunning(),
+    );
     if (sent) {
       conversationContext.append(ctx.chat.id, "user", source);
       conversationContext.append(ctx.chat.id, "assistant", replyText);
@@ -448,6 +455,7 @@ async function publishDecision(
       "commercial_poll",
       content,
       { kind: "activity" },
+      () => activityControl.isRunning(),
     );
     return;
   }
@@ -473,6 +481,7 @@ async function publishDecision(
       profile,
       { kind: "activity", userId: profile.userId },
       (await store.loadGroup(ctx.chat.id)).publications.verified_promotion.history.length,
+      () => activityControl.isRunning(),
     );
   }
 }
@@ -503,6 +512,7 @@ export interface AfroditaApplicationDependencies {
   scheduler?: Pick<PublicationScheduler, "start" | "stop"> | null;
   fetcher?: typeof fetch;
   shutdownSignals?: EventEmitter;
+  activityControl?: AfroditaActivityControl;
 }
 
 export interface AfroditaApplication {
@@ -521,6 +531,8 @@ export function createAfroditaApplication(
     (dependencies.createBot ?? ((token) => new Bot(token)))(config.botToken);
   const store = dependencies.store ?? new AfroditaStore(config.dataDirectory);
   const fetcher = dependencies.fetcher ?? fetch;
+  const activityControl = dependencies.activityControl ??
+    new AfroditaActivityControl("running");
   const conversationContext = new GroupConversationContext();
   const scheduler = dependencies.scheduler === null
     ? undefined
@@ -537,7 +549,11 @@ export function createAfroditaApplication(
           supabaseKey: config.supabaseKey,
         },
         fetcher,
+        () => activityControl.isRunning(),
       ),
+      undefined,
+      Date.now,
+      () => activityControl.isRunning(),
     );
 
   bot.catch((error) => {
@@ -644,7 +660,13 @@ export function createAfroditaApplication(
   );
 
   bot.on("message", async (ctx) => {
-    if (!isGroup(ctx) || !ctx.message || !ctx.from || ctx.from.is_bot) return;
+    if (
+      !activityControl.isRunning() ||
+      !isGroup(ctx) ||
+      !ctx.message ||
+      !ctx.from ||
+      ctx.from.is_bot
+    ) return;
     const now = Date.now();
     const rawText = ctx.message.text ?? ctx.message.caption ?? "";
     if (/^\s*\/[A-Za-z0-9_]+(?:@[A-Za-z0-9_]+)?(?:\s|$)/u.test(rawText)) return;
@@ -681,7 +703,7 @@ export function createAfroditaApplication(
       model: config.aiModel,
       supabaseUrl: config.supabaseUrl,
       supabaseKey: config.supabaseKey,
-    }, fetcher, conversationContext);
+    }, fetcher, conversationContext, activityControl);
   });
 
   const removeShutdownHandlers = { current: (): void => undefined };

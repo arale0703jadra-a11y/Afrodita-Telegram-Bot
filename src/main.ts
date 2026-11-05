@@ -2,17 +2,20 @@ import "dotenv/config";
 import { AfroditaConfigError, loadAfroditaConfig } from "./config.js";
 import { createAfroditaApplication } from "./bot.js";
 import { safeErrorSummary } from "./errors.js";
+import { AfroditaActivityControl } from "./activity-control.js";
 import { startAfroditaIntegration } from "./integration.js";
 
 async function main(): Promise<void> {
   const config = loadAfroditaConfig();
-  const application = createAfroditaApplication({ config });
+  const activityControl = new AfroditaActivityControl("paused");
+  const application = createAfroditaApplication({ config, activityControl });
   // Integración ZEUS ↔ AFRODITA vía Supabase: sincroniza estado/eventos y
-  // aplica órdenes del panel de ZEUS. Sin variables Supabase queda inactiva
-  // y AFRODITA conserva su operación autónoma.
+  // aplica órdenes del panel de ZEUS. El control de actividad inicia pausado
+  // y solo se habilita tras leer el estado persistente compartido.
   const integration = startAfroditaIntegration({
     store: application.store,
     config,
+    activityControl,
   });
   try {
     await application.start();

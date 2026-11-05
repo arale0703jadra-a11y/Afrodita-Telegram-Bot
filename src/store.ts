@@ -76,6 +76,9 @@ function normalizePublicationSettings(
         ...(typeof entry.templateId === "string"
           ? { templateId: entry.templateId.slice(0, 80) }
           : {}),
+        ...(entry.pollTheme === "intimacy" || entry.pollTheme === "market"
+          ? { pollTheme: entry.pollTheme as "intimacy" | "market" }
+          : {}),
         ...(typeof entry.previousPublishedAt === "number" &&
           Number.isFinite(entry.previousPublishedAt)
           ? { previousPublishedAt: entry.previousPublishedAt }
@@ -117,6 +120,11 @@ function normalizePublicationSettings(
     lastScheduledKey: typeof value.lastScheduledKey === "string"
       ? value.lastScheduledKey.slice(0, 100)
       : "",
+    ...(typeof value.nextScheduledAt === "number" &&
+      Number.isSafeInteger(value.nextScheduledAt) &&
+      value.nextScheduledAt > 0
+      ? { nextScheduledAt: value.nextScheduledAt }
+      : {}),
     history,
   };
 }

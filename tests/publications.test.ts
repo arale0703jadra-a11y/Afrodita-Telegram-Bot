@@ -11,6 +11,7 @@ import {
   publishCommunityReply,
   publishProfilePromotion,
   publishScheduledJob,
+  publishPoll,
 } from "../src/publishers.js";
 import {
   finalizePublication,
@@ -19,6 +20,7 @@ import {
 import { AfroditaStore } from "../src/store.js";
 import { DEFAULT_AFRODITA_LIMITS, type AfroditaState } from "../src/types.js";
 import { canPublish } from "../src/decision.js";
+import { PublicationScheduler } from "../src/scheduler.js";
 
 async function preparePromotionStore(
   store: AfroditaStore,
@@ -86,20 +88,111 @@ test("profile promotion uses a Telegram ID text mention and UTF-16 offsets", () 
   );
 });
 
-test("profile presentations vary and only describe verified authorization and public choice", () => {
-  const presentations = Array.from({ length: 8 }, (_, templateIndex) =>
+test("profile presentations vary playfully without inventing personal or physical attributes", () => {
+  const presentations = Array.from({ length: 12 }, (_, templateIndex) =>
     createProfilePromotionMessage(
-      { userId: 456, displayName: "Perfil autorizado", mention: true },
+      {
+        userId: 456,
+        displayName: "Perfil autorizado",
+        mention: true,
+        body: true,
+      },
       templateIndex,
     ),
   );
   assert.ok(presentations.every(Boolean));
-  assert.equal(new Set(presentations.map((item) => item?.text)).size, 8);
+  assert.equal(new Set(presentations.map((item) => item?.text)).size, 12);
   for (const presentation of presentations) {
     assert.match(presentation!.text, /Perfil autorizado/u);
     assert.match(presentation!.text, /verificad|autorizad/u);
-    assert.doesNotMatch(presentation!.text, /precio|disponible|contenido sexual/u);
+    assert.match(presentation!.text, /😏|🔥|💋|👀|😈|🌶️|✨|💜/u);
+    assert.doesNotMatch(
+      presentation!.text,
+      /precio|disponible|contenido sexual|curvas|cuerpazo|nalgas|caderas|piernas|escote/u,
+    );
     assert.equal(presentation!.entities[0]?.user.id, 456);
+  }
+});
+
+test("profile presentation uses only current catalog and mention permissions", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "afrodita-presentation-consent-"));
+  const store = new AfroditaStore(directory);
+  const sent: Array<{ text: string; hasEntities: boolean }> = [];
+  const api = {
+    async sendMessage(_chatId: number, text: string, options?: { entities?: unknown[] }) {
+      sent.push({ text, hasEntities: Boolean(options?.entities?.length) });
+    },
+  } as unknown as Pick<Api, "sendMessage">;
+  try {
+    await store.setEnabled(-100127, true);
+    await store.authorizeProfile(-100127, { userId: 456, displayName: "Perfil autorizado" });
+    await store.setContentConsent(-100127, 456, 456, ["catalog"], true);
+    await store.setContentConsent(-100127, 456, 456, ["body"], true);
+    assert.equal(
+      await publishProfilePromotion(
+        api,
+        store,
+        -100127,
+        { userId: 456, displayName: "Perfil autorizado" },
+        { kind: "activity", userId: 456 },
+        0,
+      ),
+      true,
+    );
+    assert.equal(sent.length, 1);
+    assert.equal(sent[0]?.hasEntities, false);
+    assert.doesNotMatch(sent[0]!.text, /@|curvas|cuerpazo|nalgas|caderas|piernas|escote/u);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("profile presentation rotation persists across reloads and does not repeat consecutively", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "afrodita-presentation-rotation-"));
+  const chatId = -100126;
+  const sent: string[] = [];
+  const api = {
+    async sendMessage(_chatId: number, text: string) {
+      sent.push(text);
+    },
+  } as unknown as Pick<Api, "sendMessage">;
+  try {
+    let store = new AfroditaStore(directory);
+    await store.setEnabled(chatId, true);
+    await store.authorizeProfile(chatId, { userId: 457, displayName: "Perfil rotativo" });
+    await store.setContentConsent(chatId, 457, 457, ["catalog"], true);
+
+    for (let index = 0; index < 2; index += 1) {
+      store = new AfroditaStore(directory);
+      assert.equal(
+        await publishProfilePromotion(
+          api,
+          store,
+          chatId,
+          { userId: 457, displayName: "Perfil rotativo" },
+          { kind: "activity", userId: 457 },
+          5,
+        ),
+        true,
+      );
+        if (index === 0) {
+          await store.updatePublicationSettings(chatId, "verified_promotion", (settings) => {
+            settings.lastPublishedAt = 0;
+          });
+        }
+    }
+
+    assert.equal(sent.length, 2);
+    assert.notEqual(sent[0], sent[1]);
+    const state = await store.loadGroup(chatId);
+    assert.deepEqual(
+      state.publications.verified_promotion.history
+        .filter((entry) => entry.status === "published")
+        .map((entry) => entry.templateId),
+      ["profile-presentation-5", "profile-presentation-6"],
+    );
+  } finally {
+    await rm(directory, { recursive: true, force: true });
   }
 });
 
@@ -119,6 +212,111 @@ test("successful conversational publication updates the counters used by decisio
       "el intervalo de decisión se aplica con contadores que se actualizan tras publicar",
     );
     assert.ok(state.communityReplyUserCooldowns["456"] > Date.now());
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("commercial and seasonal polls cannot hold simultaneous publication reservations", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "afrodita-poll-reservations-"));
+  const store = new AfroditaStore(directory);
+  try {
+    await store.setEnabled(-100127, true);
+    const first = await reservePublication(
+      store,
+      -100127,
+      "commercial_poll",
+      { kind: "scheduled", slotKey: "commercial:first" },
+    );
+    assert.ok(first);
+    const second = await reservePublication(
+      store,
+      -100127,
+      "seasonal_campaign",
+      { kind: "scheduled", slotKey: "seasonal:second" },
+    );
+    assert.equal(second, undefined);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("global pause prevents replies, polls, mentions, scheduled posts, and campaigns", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "afrodita-global-pause-publishers-"));
+  const store = new AfroditaStore(directory);
+  let sendCalls = 0;
+  const canPublishNow = () => false;
+  const api = {
+    async sendMessage() {
+      sendCalls += 1;
+      return {} as never;
+    },
+    async sendPoll() {
+      sendCalls += 1;
+      return {} as never;
+    },
+    async getChatMember() {
+      sendCalls += 1;
+      return {} as never;
+    },
+  } as unknown as Pick<Api, "sendMessage" | "sendPoll" | "getChatMember">;
+  try {
+    await store.setEnabled(-100127, true);
+    assert.equal(
+      await publishCommunityReply(
+        async () => { sendCalls += 1; },
+        store,
+        -100127,
+        456,
+        undefined,
+        canPublishNow,
+      ),
+      false,
+    );
+    assert.equal(
+      await publishPoll(
+        api,
+        store,
+        -100127,
+        "commercial_poll",
+        { question: "¿Qué prefieres?", options: ["A", "B"], topics: ["general"] },
+        { kind: "activity" },
+        canPublishNow,
+      ),
+      false,
+    );
+    assert.equal(
+      await publishProfilePromotion(
+        api,
+        store,
+        -100127,
+        { userId: 456, displayName: "Perfil" },
+        { kind: "activity", userId: 456 },
+        0,
+        canPublishNow,
+      ),
+      false,
+    );
+    for (const category of [
+      "commercial_poll",
+      "seasonal_campaign",
+      "community_reply",
+      "verified_promotion",
+    ] as const) {
+      await publishScheduledJob(
+        api,
+        store,
+        -100127,
+        category,
+        `${category}:missed-slot`,
+        {},
+        async () => {
+          throw new Error("Supabase must not be queried while paused");
+        },
+        canPublishNow,
+      );
+    }
+    assert.equal(sendCalls, 0);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
@@ -576,6 +774,168 @@ test("seasonal polls use their own category quota and history", async () => {
     assert.equal(state.publications.commercial_poll.history.length, 0);
   } finally {
     Date.now = originalNow;
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("the eight-poll daily limit includes seasonal and commercial polls together", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "afrodita-total-poll-quota-"));
+  const store = new AfroditaStore(directory);
+  const chatId = -100129;
+  const start = Date.UTC(2026, 9, 31, 0);
+  try {
+    await store.setEnabled(chatId, true);
+    await store.updatePublicationSettings(chatId, "seasonal_campaign", (settings) => {
+      settings.minIntervalMs = 1;
+    });
+
+    for (let index = 0; index < 7; index += 1) {
+      const now = start + index * 91 * 60_000;
+      const reservation = await reservePublication(
+        store,
+        chatId,
+        "commercial_poll",
+        { kind: "activity" },
+        now,
+      );
+      assert.ok(reservation);
+      await finalizePublication(store, reservation, "published", now);
+    }
+
+    const seasonalAt = start + 7 * 91 * 60_000;
+    const seasonal = await reservePublication(
+      store,
+      chatId,
+      "seasonal_campaign",
+      { kind: "scheduled", slotKey: "seasonal:daily-limit" },
+      seasonalAt,
+    );
+    assert.ok(seasonal);
+    await finalizePublication(store, seasonal, "published", seasonalAt);
+
+    assert.equal(
+      await reservePublication(
+        store,
+        chatId,
+        "commercial_poll",
+        { kind: "activity" },
+        seasonalAt + 91 * 60_000,
+      ),
+      undefined,
+    );
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("reanudar reactiva las funciones habilitadas y conserva las deshabilitadas", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "afrodita-global-resume-publishers-"));
+  const store = new AfroditaStore(directory);
+  let gateOpen = true;
+  const canPublishNow = () => gateOpen;
+  let pollSends = 0;
+  let promotionSends = 0;
+  const api = {
+    async sendPoll() {
+      pollSends += 1;
+      return { poll: { id: `poll-${pollSends}` } } as never;
+    },
+    async sendMessage() {
+      promotionSends += 1;
+      return {} as never;
+    },
+    async getChatMember() {
+      return {} as never;
+    },
+  } as unknown as Pick<Api, "sendMessage" | "sendPoll" | "getChatMember">;
+  const profile = { userId: 456, displayName: "Authorized name" };
+
+  try {
+    await store.setEnabled(-100130, true);
+    await store.authorizeProfile(-100130, profile);
+    await store.authorizePromotion(-100130, 456);
+    await store.updatePublicationSettings(-100130, "verified_promotion", (settings) => {
+      settings.enabled = false;
+    });
+
+    // Pausada: ni encuestas ni promociones salen hacia el grupo.
+    gateOpen = false;
+    assert.equal(
+      await publishPoll(
+        api,
+        store,
+        -100130,
+        "commercial_poll",
+        { question: "¿Qué prefieres?", options: ["A", "B"], topics: ["general"] },
+        { kind: "activity" },
+        canPublishNow,
+      ),
+      false,
+    );
+    assert.equal(
+      await publishProfilePromotion(
+        api,
+        store,
+        -100130,
+        profile,
+        { kind: "activity", userId: 456 },
+        0,
+        canPublishNow,
+      ),
+      false,
+    );
+    assert.equal(pollSends, 0);
+    assert.equal(promotionSends, 0);
+
+    // Reanudada: la función habilitada vuelve a publicar.
+    gateOpen = true;
+    assert.equal(
+      await publishPoll(
+        api,
+        store,
+        -100130,
+        "commercial_poll",
+        { question: "¿Qué prefieres?", options: ["A", "B"], topics: ["general"] },
+        { kind: "activity" },
+        canPublishNow,
+      ),
+      true,
+    );
+    assert.equal(pollSends, 1);
+
+    // La promoción deshabilitada antes de la pausa sigue detenida.
+    assert.equal(
+      await publishProfilePromotion(
+        api,
+        store,
+        -100130,
+        profile,
+        { kind: "activity", userId: 456 },
+        0,
+        canPublishNow,
+      ),
+      false,
+    );
+    assert.equal(promotionSends, 0);
+
+    // Solo al reactivar la categoría individualmente vuelve a publicar.
+    await store.updatePublicationSettings(-100130, "verified_promotion", (settings) => {
+      settings.enabled = true;
+    });
+    assert.equal(
+      await publishProfilePromotion(
+        api,
+        store,
+        -100130,
+        profile,
+        { kind: "activity", userId: 456 },
+        0,
+        canPublishNow,
+      ),
+      true,
+    );
+    assert.equal(promotionSends, 1);
+  } finally {
     await rm(directory, { recursive: true, force: true });
   }
 });

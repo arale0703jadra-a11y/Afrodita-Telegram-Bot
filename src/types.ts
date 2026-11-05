@@ -72,6 +72,7 @@ export interface PublicationSettings {
   publishedToday: number;
   lastPublishedAt: number;
   lastScheduledKey: string;
+  nextScheduledAt?: number;
   history: Array<{
     id: string;
     at: number;
@@ -79,6 +80,7 @@ export interface PublicationSettings {
     scheduledKey?: string;
     subjectId?: number;
     templateId?: string;
+    pollTheme?: "intimacy" | "market";
     previousPublishedAt?: number;
   }>;
 }
@@ -232,12 +234,13 @@ export const DEFAULT_PUBLICATION_SETTINGS: PublicationSettingsByCategory = {
     scheduledEnabled: true,
     activityEnabled: true,
     scheduleTimes: ["11:00", "16:00", "21:00"],
-    maxPerDay: 3,
-    minIntervalMs: 4 * 60 * 60 * 1000,
+    maxPerDay: 8,
+    minIntervalMs: 90 * 60 * 1000,
     utcDay: "",
     publishedToday: 0,
     lastPublishedAt: 0,
     lastScheduledKey: "",
+    nextScheduledAt: undefined,
     history: [],
   },
   seasonal_campaign: {

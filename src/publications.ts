@@ -7,8 +7,19 @@ import { localDateTime } from "./time.js";
 const MAX_ACTIVE_RESERVATION_MS = 30 * 60 * 1000;
 
 export type PublicationTrigger =
-  | { kind: "activity"; userId?: number }
-  | { kind: "scheduled"; slotKey: string; userId?: number };
+  | {
+      kind: "activity";
+      userId?: number;
+      templateId?: string;
+      pollTheme?: "intimacy" | "market";
+    }
+  | {
+      kind: "scheduled";
+      slotKey: string;
+      userId?: number;
+      templateId?: string;
+      pollTheme?: "intimacy" | "market";
+    };
 
 export interface PublicationReservation {
   id: string;
@@ -50,6 +61,20 @@ export async function reservePublication(
     if (!settings.enabled) return false;
     if (trigger.kind === "scheduled" && !settings.scheduledEnabled) return false;
     if (trigger.kind === "activity" && !settings.activityEnabled) return false;
+    if (
+      category === "commercial_poll" ||
+      category === "seasonal_campaign"
+    ) {
+      const activePollReservation = (
+        ["commercial_poll", "seasonal_campaign"] as const
+      ).some((pollCategory) =>
+        state.publications[pollCategory].history.some((entry) =>
+          entry.status === "reserved" &&
+          now - entry.at < MAX_ACTIVE_RESERVATION_MS,
+        ),
+      );
+      if (activePollReservation) return false;
+    }
     const local = localDateTime(now, state.timeZone);
     for (const entry of settings.history) {
       if (
@@ -82,8 +107,27 @@ export async function reservePublication(
     }
     if (settings.publishedToday >= settings.maxPerDay) return false;
     if (
-      settings.lastPublishedAt > 0 &&
-      now - settings.lastPublishedAt < settings.minIntervalMs
+      category === "commercial_poll" ||
+      category === "seasonal_campaign"
+    ) {
+      const pollsToday = (
+        ["commercial_poll", "seasonal_campaign"] as const
+      ).reduce((total, pollCategory) => {
+        const pollSettings = state.publications[pollCategory];
+        return total +
+          (pollSettings.utcDay === local.date ? pollSettings.publishedToday : 0);
+      }, 0);
+      if (pollsToday >= state.publications.commercial_poll.maxPerDay) {
+        return false;
+      }
+    }
+    const lastCategoryPollAt = Math.max(
+      settings.lastPublishedAt,
+      category === "commercial_poll" ? state.lastPollAt : 0,
+    );
+    if (
+      lastCategoryPollAt > 0 &&
+      now - lastCategoryPollAt < settings.minIntervalMs
     ) return false;
 
     let scheduledKey: string | undefined;
@@ -128,6 +172,8 @@ export async function reservePublication(
       ...(trigger.kind === "scheduled" && trigger.userId !== undefined
         ? { subjectId: trigger.userId }
         : {}),
+      ...(trigger.templateId ? { templateId: trigger.templateId } : {}),
+      ...(trigger.pollTheme ? { pollTheme: trigger.pollTheme } : {}),
       previousPublishedAt: settings.lastPublishedAt,
     });
     settings.history = settings.history.slice(-60);

@@ -100,7 +100,7 @@ function renderStatus(state: AfroditaState): string {
     lines.push(
       `${CATEGORY_LABELS[category]}: ${settings.enabled ? "activa" : "pausada"} · ` +
       `hoy ${settings.publishedToday}/${settings.maxPerDay} · ` +
-      `horarios ${settings.scheduleTimes.join(", ") || "sin programación"} · ` +
+      `${category === "commercial_poll" ? "ventana" : "horarios"} ${settings.scheduleTimes.join(", ") || "sin programación"} · ` +
       `programado ${settings.scheduledEnabled ? "sí" : "no"} · ` +
       `actividad ${settings.activityEnabled ? "sí" : "no"}`,
     );
@@ -123,7 +123,12 @@ function renderCategory(state: AfroditaState, category: PublicationCategory): st
     `Actividad: ${settings.activityEnabled ? "activa" : "pausada"}`,
     `Cuota hoy: ${settings.publishedToday}/${settings.maxPerDay}`,
     `Intervalo mínimo: ${Math.round(settings.minIntervalMs / 60_000)} min`,
-    `Horarios (${state.timeZone}): ${settings.scheduleTimes.join(", ") || "sin programación"}`,
+    `${category === "commercial_poll" ? "Ventana activa" : "Horarios"} (${state.timeZone}): ${settings.scheduleTimes.join(", ") || "sin programación"}`,
+    ...(category === "commercial_poll"
+      ? [
+          `Intervalo aleatorio objetivo: 90–120 min; se conserva el mínimo configurado de ${Math.round(settings.minIntervalMs / 60_000)} min.`,
+        ]
+      : []),
     `Última publicación: ${settings.lastPublishedAt ? new Date(settings.lastPublishedAt).toISOString() : "ninguna"}`,
   ].join("\n");
 }

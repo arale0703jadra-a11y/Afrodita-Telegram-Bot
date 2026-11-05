@@ -18,6 +18,8 @@ interface RecordedCall {
 const recorded: RecordedCall[] = [];
 let pendingCommands: unknown[] = [];
 let failStatePush = false;
+let globalMode: "running" | "paused" | undefined;
+let globalHeartbeat: string | undefined;
 
 function jsonResponse(data: unknown, status = 200): Response {
   return new Response(JSON.stringify(data), {
@@ -39,6 +41,29 @@ const fakeFetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
   }
   recorded.push({ url, method, ...(body !== undefined ? { body } : {}) });
 
+  if (url.includes("/rest/v1/afrodita_control_state")) {
+    if (method === "GET") {
+      return jsonResponse(globalMode
+        ? [{
+            id: "global",
+            mode: globalMode,
+            updated_at: new Date().toISOString(),
+            updated_by: "test",
+            heartbeat_at: globalHeartbeat ?? new Date().toISOString(),
+          }]
+        : []);
+    }
+    if (method === "POST") {
+      const state = body as { mode?: "running" | "paused"; heartbeat_at?: string };
+      globalMode = state.mode;
+      globalHeartbeat = state.heartbeat_at;
+      return jsonResponse({});
+    }
+    if (method === "PATCH") {
+      globalHeartbeat = (body as { heartbeat_at?: string }).heartbeat_at;
+      return jsonResponse({});
+    }
+  }
   if (url.includes("/rest/v1/afrodita_group_state")) {
     if (failStatePush) {
       return new Response("boom", { status: 500 });
@@ -63,6 +88,7 @@ const { startAfroditaIntegration } = await import("../src/integration.js");
 const GROUP_ID = -100777001;
 
 test("sin variables Supabase la integración queda desactivada", async () => {
+  globalMode = undefined;
   const store = new AfroditaStore(testDataDirectory);
   const handle = startAfroditaIntegration({
     store,
@@ -78,6 +104,7 @@ test("sin variables Supabase la integración queda desactivada", async () => {
 });
 
 test("sync publica el estado del grupo y aplica órdenes de ZEUS", async () => {
+  globalMode = undefined;
   const store = new AfroditaStore(testDataDirectory);
   await store.setEnabled(GROUP_ID, true);
 
@@ -125,6 +152,7 @@ test("sync publica el estado del grupo y aplica órdenes de ZEUS", async () => {
 });
 
 test("las publicaciones nuevas generan eventos para el historial", async () => {
+  globalMode = undefined;
   const store = new AfroditaStore(testDataDirectory);
   pendingCommands = [];
   recorded.length = 0;
@@ -177,6 +205,7 @@ test("las publicaciones nuevas generan eventos para el historial", async () => {
 });
 
 test("una orden inválida se marca como failed sin romper la sync", async () => {
+  globalMode = undefined;
   const store = new AfroditaStore(testDataDirectory);
   pendingCommands = [
     {
@@ -207,6 +236,10 @@ test("una orden inválida se marca como failed sin romper la sync", async () => 
       (mark?.body as { status?: string } | undefined)?.status,
       "failed",
     );
+    assert.equal(
+      (mark?.body as { last_error?: string } | undefined)?.last_error,
+      "AFRODITA_COMMAND_PAYLOAD_INVALID",
+    );
   } finally {
     handle.stop();
     pendingCommands = [];
@@ -214,6 +247,7 @@ test("una orden inválida se marca como failed sin romper la sync", async () => 
 });
 
 test("set_category activa y pausa categorías desde órdenes de ZEUS", async () => {
+  globalMode = undefined;
   const store = new AfroditaStore(testDataDirectory);
   pendingCommands = [
     {
@@ -252,6 +286,7 @@ test("set_category activa y pausa categorías desde órdenes de ZEUS", async () 
 });
 
 test("un fallo de red en la publicación no detiene la sincronización", async () => {
+  globalMode = undefined;
   const store = new AfroditaStore(testDataDirectory);
   pendingCommands = [];
   failStatePush = true;
@@ -270,5 +305,168 @@ test("un fallo de red en la publicación no detiene la sincronización", async (
   } finally {
     failStatePush = false;
     handle.stop();
+  }
+});
+
+test("resume persiste el estado global antes de confirmar la orden y conserva ajustes de grupo", async () => {
+    globalMode = "paused";
+    pendingCommands = [{
+      id: 21,
+      chat_id: 0,
+      command: "resume",
+      payload: { scope: "global" },
+    }];
+    const store = new AfroditaStore(testDataDirectory);
+    await store.setEnabled(GROUP_ID, false);
+    await store.updatePublicationSettings(GROUP_ID, "verified_promotion", (settings) => {
+      settings.enabled = false;
+    });
+    const { AfroditaActivityControl } = await import("../src/activity-control.js");
+    const activityControl = new AfroditaActivityControl("paused");
+    recorded.length = 0;
+    const handle = startAfroditaIntegration({
+      store,
+      activityControl,
+      config: {
+        supabaseUrl: "https://example.supabase.co",
+        supabaseKey: "sb_publishable_dummy",
+      },
+      fetcher: fakeFetch,
+      intervalMs: 60_000,
+    });
+    try {
+      await handle.syncNow();
+      assert.equal(globalMode, "running");
+      assert.equal(activityControl.isRunning(), true);
+      assert.equal((await store.loadGroup(GROUP_ID)).enabled, false);
+      assert.equal(
+        (await store.loadGroup(GROUP_ID)).publications.verified_promotion.enabled,
+        false,
+      );
+      const stateWriteIndex = recorded.findIndex(
+        (call) =>
+          call.method === "POST" && call.url.includes("afrodita_control_state"),
+      );
+      const appliedIndex = recorded.findIndex(
+        (call) =>
+          call.method === "PATCH" &&
+          call.url.includes("afrodita_commands") &&
+          (call.body as { status?: string } | undefined)?.status === "applied",
+      );
+      assert.ok(stateWriteIndex >= 0);
+      assert.ok(appliedIndex > stateWriteIndex, "solo confirma después de persistir running");
+    } finally {
+      handle.stop();
+      pendingCommands = [];
+    }
+});
+
+test("global paused state survives an integration restart while sync and heartbeat continue", async () => {
+    globalMode = "paused";
+    pendingCommands = [];
+    recorded.length = 0;
+    const { AfroditaActivityControl } = await import("../src/activity-control.js");
+    const firstGate = new AfroditaActivityControl("running");
+    const first = startAfroditaIntegration({
+      store: new AfroditaStore(testDataDirectory),
+      activityControl: firstGate,
+      config: {
+        supabaseUrl: "https://example.supabase.co",
+        supabaseKey: "sb_publishable_dummy",
+      },
+      fetcher: fakeFetch,
+      intervalMs: 60_000,
+    });
+    try {
+      await first.syncNow();
+      assert.equal(firstGate.isRunning(), false);
+      assert.ok(
+        recorded.some((call) =>
+          call.method === "POST" && call.url.includes("afrodita_group_state"),
+        ),
+        "la sincronización de grupos sigue activa mientras está pausada",
+      );
+      assert.ok(
+        recorded.some((call) =>
+          call.method === "PATCH" && call.url.includes("afrodita_control_state"),
+        ),
+        "el heartbeat sigue activo mientras está pausada",
+      );
+    } finally {
+      first.stop();
+    }
+
+    const restartedGate = new AfroditaActivityControl("paused");
+    const restarted = startAfroditaIntegration({
+      store: new AfroditaStore(testDataDirectory),
+      activityControl: restartedGate,
+      config: {
+        supabaseUrl: "https://example.supabase.co",
+        supabaseKey: "sb_publishable_dummy",
+      },
+      fetcher: fakeFetch,
+      intervalMs: 60_000,
+    });
+    try {
+      await restarted.syncNow();
+      assert.equal(restartedGate.isRunning(), false);
+      assert.equal(globalMode, "paused");
+    } finally {
+      restarted.stop();
+    }
+});
+
+test("la orden global pause persiste paused antes de confirmarla y respeta la configuración individual", async () => {
+  globalMode = "running";
+  pendingCommands = [{
+    id: 22,
+    chat_id: 0,
+    command: "pause",
+    payload: { scope: "global" },
+  }];
+  const store = new AfroditaStore(testDataDirectory);
+  await store.setEnabled(GROUP_ID, true);
+  await store.updatePublicationSettings(GROUP_ID, "verified_promotion", (settings) => {
+    settings.enabled = false;
+  });
+  const { AfroditaActivityControl } = await import("../src/activity-control.js");
+  const activityControl = new AfroditaActivityControl("running");
+  recorded.length = 0;
+  const handle = startAfroditaIntegration({
+    store,
+    activityControl,
+    config: {
+      supabaseUrl: "https://example.supabase.co",
+      supabaseKey: "sb_publishable_dummy",
+    },
+    fetcher: fakeFetch,
+    intervalMs: 60_000,
+  });
+  try {
+    await handle.syncNow();
+    assert.equal(globalMode, "paused");
+    assert.equal(activityControl.isRunning(), false);
+    const stateWriteIndex = recorded.findIndex(
+      (call) =>
+        call.method === "POST" && call.url.includes("afrodita_control_state"),
+    );
+    const appliedIndex = recorded.findIndex(
+      (call) =>
+        call.method === "PATCH" &&
+        call.url.includes("afrodita_commands") &&
+        (call.body as { status?: string } | undefined)?.status === "applied",
+    );
+    assert.ok(stateWriteIndex >= 0);
+    assert.ok(appliedIndex > stateWriteIndex, "solo confirma después de persistir paused");
+    const state = await store.loadGroup(GROUP_ID);
+    assert.equal(
+      state.enabled,
+      true,
+      "la pausa global conserva el ajuste individual del grupo",
+    );
+    assert.equal(state.publications.verified_promotion.enabled, false);
+  } finally {
+    handle.stop();
+    pendingCommands = [];
   }
 });
