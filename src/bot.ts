@@ -487,22 +487,13 @@ async function publishDecision(
 }
 
 
-async function setGroupEnabled(ctx: Context, store: AfroditaStore, enabled: boolean): Promise<void> {
-  if (!isGroup(ctx) || !ctx.from) {
-    await ctx.reply("Este ajuste solo está disponible en un grupo.");
-    return;
-  }
-  if (!(await requireGroupAdministrator(ctx, ctx.chat.id))) return;
-  try {
-    await store.setEnabled(ctx.chat.id, enabled);
-  } catch (error) {
-    console.error(`[AFRODITA] No se pudo guardar el ajuste del grupo (${errorName(error)}).`);
-    await ctx.reply("No pude guardar el ajuste del grupo. Inténtalo de nuevo más tarde.");
-    return;
-  }
-  await ctx.reply(enabled
-    ? "Afrodita está activa 💫 Usaré límites conservadores y puedes pausarme con /afrodita_pausar. Este grupo debe ser solo para personas adultas (18+)."
-    : "Afrodita quedó en pausa; no analizaré mensajes nuevos de este grupo.");
+const GLOBAL_CONTROL_NOTICE =
+  "🌸 El control de AFRODITA es global y vive en el panel privado de ZEUS " +
+  "(/menu → 🌸 AFRODITA). Ya no existe pausa ni reanudación por grupo: el " +
+  "interruptor único activa o detiene AFRODITA en todos los grupos.";
+
+async function showGlobalControlNotice(ctx: Context): Promise<void> {
+  await ctx.reply(GLOBAL_CONTROL_NOTICE);
 }
 export interface AfroditaApplicationDependencies {
   config: AfroditaConfig;
@@ -580,8 +571,8 @@ export function createAfroditaApplication(
       );
     });
     bot.command("menu", async (ctx) => showAdminMenu(ctx, store));
-    bot.command("afrodita_activar", async (ctx) => setGroupEnabled(ctx, store, true));
-    bot.command("afrodita_pausar", async (ctx) => setGroupEnabled(ctx, store, false));
+    bot.command("afrodita_activar", async (ctx) => showGlobalControlNotice(ctx));
+    bot.command("afrodita_pausar", async (ctx) => showGlobalControlNotice(ctx));
     bot.command("afrodita_consentimiento", async (ctx) =>
       setContentConsent(ctx, store, {
         supabaseUrl: config.supabaseUrl,
@@ -683,7 +674,8 @@ export function createAfroditaApplication(
       explicitQuietRequest: directed && QUIET_FEEDBACK.test(text),
     };
     const updated = await store.updateGroup(ctx.chat.id, (state) => {
-      if (!state.enabled) return false;
+      // El flag legacy `enabled` ya no bloquea la observación: la única pausa
+      // es el control global (comprobado al inicio de este manejador).
       observeMessage(state, observation, now);
       return true;
     });

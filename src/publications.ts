@@ -50,17 +50,21 @@ export async function reservePublication(
   chatId: number,
   category: PublicationCategory,
   trigger: PublicationTrigger,
+  canPublish: () => boolean,
   now = Date.now(),
 ): Promise<PublicationReservation | undefined> {
+  // Control único global: sin `canPublish` (estado global running) no se
+  // reserva ninguna actividad. Los flags legacy por grupo/categoría ya no
+  // participan en esta decisión.
+  if (!canPublish()) return undefined;
   const id = randomUUID();
   const updated = await store.updateGroup(chatId, (state) => {
-    if (!state.enabled || state.activityPaused || now < state.quietUntil) {
+    // quietUntil es una lógica interna con caducidad automática (no es un
+    // control de pausa manual) y se conserva.
+    if (now < state.quietUntil) {
       return false;
     }
     const settings = state.publications[category];
-    if (!settings.enabled) return false;
-    if (trigger.kind === "scheduled" && !settings.scheduledEnabled) return false;
-    if (trigger.kind === "activity" && !settings.activityEnabled) return false;
     if (
       category === "commercial_poll" ||
       category === "seasonal_campaign"

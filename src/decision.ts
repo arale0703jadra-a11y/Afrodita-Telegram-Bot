@@ -22,14 +22,12 @@ export function canPublish(
   limits: Partial<AfroditaLimits> = {},
 ): boolean {
   const effective = { ...DEFAULT_AFRODITA_LIMITS, ...limits };
-  if (!state.enabled) return false;
   const category = action === "poll"
     ? state.publications.commercial_poll
     : action === "profile"
       ? state.publications.verified_promotion
       : undefined;
   if (category) {
-    if (!category.enabled) return false;
     const date = localDateTime(now, state.timeZone).date;
     const publishedToday = category.utcDay === date
       ? category.publishedToday
@@ -54,7 +52,8 @@ export function decideAction(
   context: DecisionContext,
 ): AfroditaDecision {
   const limits = { ...DEFAULT_AFRODITA_LIMITS, ...context.limits };
-  if (!state.enabled) return { action: "silence", reason: "no_opportunity" };
+  // La pausa ya no vive en flags locales: decideAction decide oportunidades y
+  // la ejecución se detiene en el control global (canPublish/reserve/scheduler).
   if (context.now < state.quietUntil) {
     return { action: "silence", reason: "quiet_period" };
   }
@@ -68,7 +67,6 @@ export function decideAction(
 
   if (
     state.messagesSincePoll >= 40 &&
-    state.publications.commercial_poll.activityEnabled &&
     canPublish(state, "poll", context.now, limits)
   ) {
     return { action: "poll", topic: preferredTopic(state) };
@@ -76,7 +74,6 @@ export function decideAction(
   if (
     Object.keys(state.authorizedProfiles).length > 0 &&
     state.messagesSincePromotion >= 30 &&
-    state.publications.verified_promotion.activityEnabled &&
     canPublish(state, "profile", context.now, limits) &&
     context.randomValue < 0.01
   ) {

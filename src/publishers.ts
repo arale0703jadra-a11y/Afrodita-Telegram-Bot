@@ -212,6 +212,7 @@ export async function publishPoll(
       ...(content.templateId ? { templateId: content.templateId } : {}),
       ...(content.pollTheme ? { pollTheme: content.pollTheme } : {}),
     },
+    canPublish,
   );
   if (!reservation) return false;
   const latestState = await store.loadGroup(chatId);
@@ -332,6 +333,7 @@ export async function publishProfilePromotion(
     chatId,
     "verified_promotion",
     { ...trigger, templateId: presentationId },
+    canPublish,
   );
   if (!reservation) return false;
   try {
@@ -407,6 +409,7 @@ export async function publishCommunityReply(
     chatId,
     "community_reply",
     trigger,
+    canPublish,
   );
   if (!reservation) return false;
   try {
@@ -486,6 +489,7 @@ export async function publishScheduledJob(
       chatId,
       category,
       trigger,
+      canPublish,
     );
     if (!reservation) return false;
     try {

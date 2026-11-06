@@ -24,14 +24,17 @@ export function getDuePublications(
   state: AfroditaState,
   now: number,
 ): ScheduledPublication[] {
-  if (!state.enabled || state.activityPaused || now < state.quietUntil) return [];
+  // La única pausa es el control global (canPublish en PublicationScheduler).
+  // quietUntil es una lógica interna con caducidad automática.
+  if (now < state.quietUntil) return [];
   const { date, time } = localDateTime(now, state.timeZone);
   return PUBLICATION_CATEGORIES.flatMap((category) => {
     const settings = state.publications[category];
     const publishedToday = settings.utcDay === date
       ? settings.publishedToday
       : 0;
-    if (!settings.enabled || !settings.scheduledEnabled) return [];
+    // Los toggles legacy (enabled/scheduledEnabled) son inertos: solo cuentan
+    // la configuración funcional (horarios, cuotas e intervalos).
     if (category === "commercial_poll") {
       if (
         settings.nextScheduledAt === undefined ||
@@ -124,13 +127,12 @@ export class PublicationScheduler {
         if (!this.canPublish()) return;
         try {
           let state = await this.store.loadGroup(chatId);
-          if (
-            state.enabled &&
-            state.publications.commercial_poll.enabled &&
-            state.publications.commercial_poll.scheduledEnabled
-          ) {
-            state = await this.preparePollTimer(chatId, state, now);
-          }
+          // Los flags legacy (state.enabled, settings.enabled/scheduledEnabled)
+          // son inertos: el temporizador de encuestas se prepara para todos
+          // los grupos. La única pausa válida es el control global
+          // (canPublish) y la lógica interna con caducidad (quietUntil,
+          // cubierta en getDuePublications).
+          state = await this.preparePollTimer(chatId, state, now);
           let pollPublished = false;
           const dueJobs = getDuePublications(chatId, state, now).sort(
             (left, right) =>
@@ -247,12 +249,9 @@ export class PublicationScheduler {
       try {
         const state = await this.store.loadGroup(chatId);
         const settings = state.publications.commercial_poll;
-        if (
-          !state.enabled ||
-          !settings.enabled ||
-          !settings.scheduledEnabled ||
-          settings.scheduleTimes.length === 0
-        ) continue;
+        // Los flags legacy por grupo/categoría son inertos: todos los grupos
+        // registrados con horarios configurados se reajustan al reanudar.
+        if (settings.scheduleTimes.length === 0) continue;
         const nextScheduledAt = nextScheduledPollWindowTime(
           now + Math.max(scheduledPollIntervalMs(), settings.minIntervalMs),
           state.timeZone,

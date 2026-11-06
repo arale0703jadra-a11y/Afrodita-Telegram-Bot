@@ -5,11 +5,8 @@ import {
   type GlobalActivityState,
 } from "./activity-control.js";
 import type { AfroditaStore } from "./store.js";
-import {
-  PUBLICATION_CATEGORIES,
-  type AfroditaState,
-  type PublicationCategory,
-} from "./types.js";
+import { sweepLegacyBlocks } from "./global-resume.js";
+import type { AfroditaState } from "./types.js";
 
 /**
  * Integración AFRODITA ↔ ZEUS mediante Supabase/PostgreSQL.
@@ -29,13 +26,6 @@ const MAX_JITTER_MS = 15_000;
 const COMMAND_PAGE_LIMIT = 25;
 const EVENT_BATCH_LIMIT = 25;
 const ERROR_LOG_THROTTLE_MS = 10 * 60_000;
-
-const TOGGLEABLE_FIELDS = [
-  "enabled",
-  "scheduledEnabled",
-  "activityEnabled",
-] as const;
-type ToggleableField = (typeof TOGGLEABLE_FIELDS)[number];
 
 export interface AfroditaIntegrationOptions {
   store: AfroditaStore;
@@ -120,20 +110,6 @@ function deriveNewEvents(
   return events.slice(-EVENT_BATCH_LIMIT);
 }
 
-function validCategory(value: unknown): value is PublicationCategory {
-  return (
-    typeof value === "string" &&
-    (PUBLICATION_CATEGORIES as readonly string[]).includes(value)
-  );
-}
-
-function validToggleField(value: unknown): value is ToggleableField {
-  return (
-    typeof value === "string" &&
-    (TOGGLEABLE_FIELDS as readonly string[]).includes(value)
-  );
-}
-
 /**
  * Aplica una orden de ZEUS al estado local. Lanza error si la orden no es
  * válida; el llamador la marca como `failed` sin reintentos.
@@ -142,7 +118,7 @@ async function applyCommand(
   store: AfroditaStore,
   activityControl: AfroditaActivityControl,
   writeGlobalState: (state: GlobalActivityState) => Promise<void>,
-  chatId: number,
+  _chatId: number,
   command: PendingCommand,
 ): Promise<void> {
   const payload = command.payload;
@@ -151,29 +127,24 @@ async function applyCommand(
     payload.scope === "global"
   ) {
     const state = command.command === "pause" ? "paused" : "running";
+    if (state === "running") {
+      // Al reanudar: barrido idempotente de los bloqueos heredados en TODOS
+      // los grupos registrados, antes de persistir y confirmar la orden.
+      // No toca históricos, cuotas, contadores ni horarios (sin duplicados).
+      await sweepLegacyBlocks(store);
+    }
     await writeGlobalState(state);
     activityControl.setState(state);
     return;
   }
-  if (command.command === "pause") {
-    await store.setEnabled(chatId, false);
-    return;
-  }
-  if (command.command === "resume") {
-    await store.setEnabled(chatId, true);
-    return;
+  // Controles individuales eliminados: la única fuente de verdad es el estado
+  // global (`afrodita_control_state.mode`). Estas órdenes se rechazan sin
+  // modificar ningún estado para no contradecir la activación global.
+  if (command.command === "pause" || command.command === "resume") {
+    throw new Error("AFRODITA_COMMAND_GLOBAL_ONLY");
   }
   if (command.command === "set_category") {
-    const category = payload.category;
-    const field = payload.field;
-    const value = payload.value;
-    if (!validCategory(category) || !validToggleField(field) || typeof value !== "boolean") {
-      throw new Error("AFRODITA_COMMAND_PAYLOAD_INVALID");
-    }
-    await store.updatePublicationSettings(chatId, category, (settings) => {
-      settings[field] = value;
-    });
-    return;
+    throw new Error("AFRODITA_COMMAND_INDIVIDUAL_CONTROL_REMOVED");
   }
   throw new Error("AFRODITA_COMMAND_UNKNOWN");
 }
@@ -406,6 +377,13 @@ export function startAfroditaIntegration(
     } else if (commandFetchOk) {
       try {
         const globalState = await readGlobalControl();
+        // Borde de reanudación (arranque o recuperación tras un fallo): si el
+        // estado global aprobado pasa a `running` y el ejecutor estaba
+        // pausado, se normalizan los bloqueos heredados de todos los grupos
+        // antes de arrancar. Si el barrido falla, el catch deja todo pausado.
+        if (globalState === "running" && !activityControl.isRunning()) {
+          await sweepLegacyBlocks(store);
+        }
         activityControl.setState(globalState ?? "paused");
         if (globalState === undefined) {
           try {
