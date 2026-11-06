@@ -227,6 +227,7 @@ test("commercial and seasonal polls cannot hold simultaneous publication reserva
       -100127,
       "commercial_poll",
       { kind: "scheduled", slotKey: "commercial:first" },
+    () => true,
     );
     assert.ok(first);
     const second = await reservePublication(
@@ -234,6 +235,7 @@ test("commercial and seasonal polls cannot hold simultaneous publication reserva
       -100127,
       "seasonal_campaign",
       { kind: "scheduled", slotKey: "seasonal:second" },
+    () => true,
     );
     assert.equal(second, undefined);
   } finally {
@@ -478,6 +480,7 @@ test("uncertain promotion send stays reserved in history as unknown and blocks i
       -100134,
       "verified_promotion",
       { kind: "activity", userId: 456 },
+      () => true,
       Date.now() + 5 * 60 * 60 * 1000,
     );
     await store.authorizeProfile(-100134, {
@@ -490,6 +493,7 @@ test("uncertain promotion send stays reserved in history as unknown and blocks i
       -100134,
       "verified_promotion",
       { kind: "activity", userId: 457 },
+      () => true,
       Date.now() + 5 * 60 * 60 * 1000,
     );
     const state = await store.loadGroup(-100134);
@@ -649,6 +653,7 @@ test("stale publication reservations become unknown without restoring their quot
       -100124,
       "commercial_poll",
       { kind: "activity" },
+      () => true,
       now,
     );
     assert.ok(first);
@@ -659,6 +664,7 @@ test("stale publication reservations become unknown without restoring their quot
         -100124,
         "commercial_poll",
         { kind: "activity" },
+        () => true,
         now + 29 * 60_000,
       ),
       undefined,
@@ -668,6 +674,7 @@ test("stale publication reservations become unknown without restoring their quot
       -100124,
       "commercial_poll",
       { kind: "activity" },
+      () => true,
       now + 31 * 60_000,
     );
     const state = await store.loadGroup(-100124);
@@ -699,6 +706,7 @@ test("definitive send failures release quota but wait the category interval befo
       -100127,
       "commercial_poll",
       { kind: "activity" },
+      () => true,
       now,
     );
     assert.ok(reservation);
@@ -710,6 +718,7 @@ test("definitive send failures release quota but wait the category interval befo
         -100127,
         "commercial_poll",
         { kind: "activity" },
+        () => true,
         now + 59_999,
       ),
       undefined,
@@ -719,6 +728,7 @@ test("definitive send failures release quota but wait the category interval befo
       -100127,
       "commercial_poll",
       { kind: "activity" },
+      () => true,
       now + 60_000,
     );
     const state = await store.loadGroup(-100127);
@@ -796,6 +806,7 @@ test("the eight-poll daily limit includes seasonal and commercial polls together
         chatId,
         "commercial_poll",
         { kind: "activity" },
+        () => true,
         now,
       );
       assert.ok(reservation);
@@ -808,6 +819,7 @@ test("the eight-poll daily limit includes seasonal and commercial polls together
       chatId,
       "seasonal_campaign",
       { kind: "scheduled", slotKey: "seasonal:daily-limit" },
+      () => true,
       seasonalAt,
     );
     assert.ok(seasonal);
@@ -819,6 +831,7 @@ test("the eight-poll daily limit includes seasonal and commercial polls together
         chatId,
         "commercial_poll",
         { kind: "activity" },
+        () => true,
         seasonalAt + 91 * 60_000,
       ),
       undefined,
@@ -828,7 +841,7 @@ test("the eight-poll daily limit includes seasonal and commercial polls together
   }
 });
 
-test("reanudar reactiva las funciones habilitadas y conserva las deshabilitadas", async () => {
+test("el gate global gobierna a todos los publishers; los flags legacy ya no mantienen pausas", async () => {
   const directory = await mkdtemp(join(tmpdir(), "afrodita-global-resume-publishers-"));
   const store = new AfroditaStore(directory);
   let gateOpen = true;
@@ -903,25 +916,8 @@ test("reanudar reactiva las funciones habilitadas y conserva las deshabilitadas"
     );
     assert.equal(pollSends, 1);
 
-    // La promoción deshabilitada antes de la pausa sigue detenida.
-    assert.equal(
-      await publishProfilePromotion(
-        api,
-        store,
-        -100130,
-        profile,
-        { kind: "activity", userId: 456 },
-        0,
-        canPublishNow,
-      ),
-      false,
-    );
-    assert.equal(promotionSends, 0);
-
-    // Solo al reactivar la categoría individualmente vuelve a publicar.
-    await store.updatePublicationSettings(-100130, "verified_promotion", (settings) => {
-      settings.enabled = true;
-    });
+    // El flag legacy `enabled = false` ya no mantiene la pausa: con el gate
+    // global abierto, la promoción vuelve a publicar sin reactivar nada.
     assert.equal(
       await publishProfilePromotion(
         api,

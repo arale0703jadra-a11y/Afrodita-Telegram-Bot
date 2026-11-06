@@ -314,17 +314,19 @@ test("daily cap and minimum interval suppress further posts", () => {
   );
 });
 
-test("new groups remain inactive until an administrator enables AFRODITA", () => {
+test("new groups are not gated by legacy flags: execution depends on the global control", () => {
   const state = initialAfroditaState();
+  // El flag heredado arranca en false pero ya no decide nada.
   assert.equal(state.enabled, false);
-  assert.deepEqual(
-    decideAction(state, { directedToBot: true, randomValue: 0, now }),
-    { action: "silence", reason: "no_opportunity" },
+  assert.equal(
+    canPublish(state, "reply", now),
+    true,
+    "sin límites ni silencio, la cuota interna permite decidir",
   );
-  state.enabled = true;
   assert.equal(
     decideAction(state, { directedToBot: true, randomValue: 0, now }).action,
     "reply",
+    "la pausa real la aplica el control global, no el flag del grupo",
   );
 });
 

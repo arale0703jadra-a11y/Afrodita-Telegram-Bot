@@ -33,16 +33,22 @@ test("scheduler emits seasonal polls only on their configured campaign slot", ()
   );
 });
 
-test("paused groups and groups in a quiet period have no scheduled posts", () => {
+test("quiet periods still suppress scheduled posts; legacy group flags do not", () => {
   const state = initialAfroditaState();
   const scheduledAt = Date.UTC(2026, 9, 31, 18, 0);
   state.enabled = true;
   state.quietUntil = scheduledAt + 1;
   assert.deepEqual(getDuePublications(-100126, state, scheduledAt), []);
 
+  // El flag legacy `enabled = false` ya no bloquea: la única pausa válida es
+  // el control global (canPublish en PublicationScheduler).
   state.quietUntil = 0;
   state.enabled = false;
-  assert.deepEqual(getDuePublications(-100126, state, scheduledAt), []);
+  assert.equal(
+    getDuePublications(-100126, state, scheduledAt).length,
+    1,
+    "el flag heredado no puede impedir la ejecución mientras el control corre",
+  );
 });
 
 test("global pause skips scheduler ticks without enumerating or queueing overdue work", async () => {

@@ -6,6 +6,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { Bot, type PollingOptions } from "grammy";
 import { createAfroditaApplication } from "../src/bot.js";
+import { AfroditaActivityControl } from "../src/activity-control.js";
 import { loadAfroditaConfig } from "../src/config.js";
 import { AfroditaStore } from "../src/store.js";
 
@@ -78,7 +79,11 @@ class ControlledBot extends Bot {
   override async stop(): Promise<void> {}
 }
 
-function activationCommand(updateId: number, chatId: number): Update {
+function activationCommand(
+  updateId: number,
+  chatId: number,
+  commandText = "/afrodita_activar",
+): Update {
   return {
     update_id: updateId,
     message: {
@@ -86,9 +91,9 @@ function activationCommand(updateId: number, chatId: number): Update {
       date: 1793000000,
       chat: { id: chatId, type: "supergroup", title: "Grupo de prueba" },
       from: { id: 9001, is_bot: false, first_name: "Admin", username: "admin_persona" },
-      text: "/afrodita_activar",
+      text: commandText,
       entities: [
-        { type: "bot_command", offset: 0, length: "/afrodita_activar".length },
+        { type: "bot_command", offset: 0, length: commandText.length },
       ],
     },
   };
@@ -175,7 +180,7 @@ test("la activación persiste tras un reinicio sin perder datos existentes", asy
   });
 });
 
-test("/afrodita_activar activa el grupo cuando quien lo ejecuta es administración", async () => {
+test("/afrodita_activar redirige al control global y no activa el grupo por separado", async () => {
   await withDirectory(async (directory) => {
     const bot = new ControlledBot();
     bot.memberStatus = "administrator";
@@ -190,18 +195,23 @@ test("/afrodita_activar activa el grupo cuando quien lo ejecuta es administraci�
 
     await bot.handleUpdate(activationCommand(1, -100333));
 
-    assert.equal((await store.loadGroup(-100333)).enabled, true);
+    assert.equal(
+      (await store.loadGroup(-100333)).enabled,
+      false,
+      "el comando ya no activa grupos individualmente",
+    );
     assert.ok(bot.sent.some((message) =>
-      message.chatId === -100333 && /Afrodita está activa/u.test(message.text)
+      message.chatId === -100333 && /panel privado de ZEUS/u.test(message.text)
     ));
   });
 });
 
-test("/afrodita_activar se rechaza sin administración y no modifica el grupo", async () => {
+test("/afrodita_pausar ya no pausa el grupo: redirige al control global sin tocar el estado", async () => {
   await withDirectory(async (directory) => {
     const bot = new ControlledBot();
     bot.memberStatus = "member";
     const store = new AfroditaStore(directory);
+    await store.setEnabled(-100444, true);
     createAfroditaApplication({
       config: loadAfroditaConfig({ AFRODITA_BOT_TOKEN: TEST_TOKEN }),
       bot,
@@ -210,11 +220,15 @@ test("/afrodita_activar se rechaza sin administración y no modifica el grupo", 
       shutdownSignals: new EventEmitter(),
     });
 
-    await bot.handleUpdate(activationCommand(2, -100444));
+    await bot.handleUpdate(activationCommand(2, -100444, "/afrodita_pausar"));
 
-    assert.equal((await store.loadGroup(-100444)).enabled, false);
+    assert.equal(
+      (await store.loadGroup(-100444)).enabled,
+      true,
+      "la orden por grupo ya no pausa nada",
+    );
     assert.ok(bot.sent.some((message) =>
-      /Solo una persona administradora/u.test(message.text)
+      /panel privado de ZEUS/u.test(message.text)
     ));
   });
 });
@@ -244,7 +258,7 @@ test("los mensajes se procesan cuando el grupo está activado", async () => {
   });
 });
 
-test("los mensajes se ignoran en silencio cuando el grupo está desactivado", async () => {
+test("el flag legacy desactivado ya no bloquea los mensajes con el control global activo", async () => {
   await withDirectory(async (directory) => {
     const bot = new ControlledBot();
     const store = new AfroditaStore(directory);
@@ -258,7 +272,30 @@ test("los mensajes se ignoran en silencio cuando el grupo está desactivado", as
 
     await bot.handleUpdate(directedMessage(4, -100666));
 
-    assert.equal((await store.loadGroup(-100666)).messageCount, 0);
+    assert.equal(
+      (await store.loadGroup(-100666)).messageCount,
+      1,
+      "la observación ya no depende del flag heredado",
+    );
+  });
+});
+
+test("con el control global en pausa no se observa ni se responde nada", async () => {
+  await withDirectory(async (directory) => {
+    const bot = new ControlledBot();
+    const store = new AfroditaStore(directory);
+    createAfroditaApplication({
+      config: loadAfroditaConfig({ AFRODITA_BOT_TOKEN: TEST_TOKEN }),
+      bot,
+      store,
+      scheduler: null,
+      shutdownSignals: new EventEmitter(),
+      activityControl: new AfroditaActivityControl("paused"),
+    });
+
+    await bot.handleUpdate(directedMessage(5, -100777));
+
+    assert.equal((await store.loadGroup(-100777)).messageCount, 0);
     assert.deepEqual(bot.sent, []);
   });
 });

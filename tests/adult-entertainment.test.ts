@@ -142,16 +142,28 @@ test("sin fotos autorizadas no hay contenido multimedia que enviar", () => {
   assert.equal(selection.kind === "profile" ? selection.model.media.length : -1, 0);
 });
 
-test("pausas y límites por grupo siguen funcionando", () => {
-  const paused = initialAfroditaState();
-  const decision = decideAction(paused, {
+test("los límites internos siguen funcionando; la pausa ya no vive en flags por grupo", () => {
+  const state = initialAfroditaState();
+  // El silencio temporal (quietUntil) es lógica interna con caducidad.
+  state.quietUntil = Date.now() + 60_000;
+  const silenced = decideAction(state, {
     directedToBot: true,
     randomValue: 0,
     now: Date.now(),
   });
-  assert.equal(decision.action, "silence");
-  assert.equal(canPublish(paused, "reply", Date.now()), false);
-  assert.deepEqual(getDuePublications(-100777, paused, Date.now()), []);
+  assert.equal(silenced.action, "silence");
+  assert.equal(canPublish(state, "reply", Date.now()), false);
+
+  // Sin silencio, el flag legacy `enabled` ya no decide: la pausa real es el
+  // control global y se aplica en reserve/scheduler (ver global-control.test).
+  state.quietUntil = 0;
+  const decision = decideAction(state, {
+    directedToBot: true,
+    randomValue: 0,
+    now: Date.now(),
+  });
+  assert.equal(decision.action, "reply");
+  assert.deepEqual(getDuePublications(-100777, state, Date.now()), []);
 });
 
 test("variedad: distintos slots producen distintas encuestas y líneas", () => {

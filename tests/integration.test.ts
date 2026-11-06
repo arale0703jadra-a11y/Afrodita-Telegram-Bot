@@ -103,7 +103,7 @@ test("sin variables Supabase la integración queda desactivada", async () => {
   handle.stop();
 });
 
-test("sync publica el estado del grupo y aplica órdenes de ZEUS", async () => {
+test("sync publica el estado del grupo y rechaza las órdenes individuales", async () => {
   globalMode = undefined;
   const store = new AfroditaStore(testDataDirectory);
   await store.setEnabled(GROUP_ID, true);
@@ -134,17 +134,25 @@ test("sync publica el estado del grupo y aplica órdenes de ZEUS", async () => {
       GROUP_ID,
     );
 
-    const stateAfterPause = await store.loadGroup(GROUP_ID);
-    assert.equal(stateAfterPause.enabled, false, "la orden pause se aplica");
+    const stateAfterCommand = await store.loadGroup(GROUP_ID);
+    assert.equal(
+      stateAfterCommand.enabled,
+      true,
+      "la orden individual no modifica el estado del grupo",
+    );
 
     const mark = recorded.find(
       (call) =>
         call.method === "PATCH" && call.url.includes("afrodita_commands"),
     );
-    assert.ok(mark, "la orden debe marcarse como aplicada");
+    assert.ok(mark, "la orden debe marcarse como rechazada");
     assert.equal(
       (mark?.body as { status?: string } | undefined)?.status,
-      "applied",
+      "failed",
+    );
+    assert.equal(
+      (mark?.body as { last_error?: string } | undefined)?.last_error,
+      "AFRODITA_COMMAND_GLOBAL_ONLY",
     );
   } finally {
     handle.stop();
@@ -238,7 +246,7 @@ test("una orden inválida se marca como failed sin romper la sync", async () => 
     );
     assert.equal(
       (mark?.body as { last_error?: string } | undefined)?.last_error,
-      "AFRODITA_COMMAND_PAYLOAD_INVALID",
+      "AFRODITA_COMMAND_INDIVIDUAL_CONTROL_REMOVED",
     );
   } finally {
     handle.stop();
@@ -246,7 +254,7 @@ test("una orden inválida se marca como failed sin romper la sync", async () => 
   }
 });
 
-test("set_category activa y pausa categorías desde órdenes de ZEUS", async () => {
+test("set_category individual ya no modifica categorías: se rechaza sin tocar el estado", async () => {
   globalMode = undefined;
   const store = new AfroditaStore(testDataDirectory);
   pendingCommands = [
@@ -270,14 +278,22 @@ test("set_category activa y pausa categorías desde órdenes de ZEUS", async () 
   try {
     await handle.syncNow();
     const state = await store.loadGroup(GROUP_ID);
-    assert.equal(state.publications.verified_promotion.enabled, false);
+    assert.equal(
+      state.publications.verified_promotion.enabled,
+      true,
+      "la orden individual no cambia la categoría",
+    );
     const mark = recorded.find(
       (call) =>
         call.method === "PATCH" && call.url.includes("afrodita_commands"),
     );
     assert.equal(
       (mark?.body as { status?: string } | undefined)?.status,
-      "applied",
+      "failed",
+    );
+    assert.equal(
+      (mark?.body as { last_error?: string } | undefined)?.last_error,
+      "AFRODITA_COMMAND_INDIVIDUAL_CONTROL_REMOVED",
     );
   } finally {
     handle.stop();
@@ -308,7 +324,7 @@ test("un fallo de red en la publicación no detiene la sincronización", async (
   }
 });
 
-test("resume persiste el estado global antes de confirmar la orden y conserva ajustes de grupo", async () => {
+test("resume persiste running, limpia los bloqueos heredados y solo entonces confirma la orden", async () => {
     globalMode = "paused";
     pendingCommands = [{
       id: 21,
@@ -338,10 +354,15 @@ test("resume persiste el estado global antes de confirmar la orden y conserva aj
       await handle.syncNow();
       assert.equal(globalMode, "running");
       assert.equal(activityControl.isRunning(), true);
-      assert.equal((await store.loadGroup(GROUP_ID)).enabled, false);
+      assert.equal(
+        (await store.loadGroup(GROUP_ID)).enabled,
+        true,
+        "el barrido de reanudación habilita el grupo",
+      );
       assert.equal(
         (await store.loadGroup(GROUP_ID)).publications.verified_promotion.enabled,
-        false,
+        true,
+        "el barrido limpia el bloqueo heredado de la categoría",
       );
       const stateWriteIndex = recorded.findIndex(
         (call) =>
